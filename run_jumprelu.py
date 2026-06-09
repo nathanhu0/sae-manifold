@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--learn-rank", action="store_true")           # learn per-dim rank (pool rank = MAX); else fixed pool
     ap.add_argument("--pool", default="1:16,2:16,3:16,4:16")       # "rank:count,..." ; learn-rank -> homogeneous e.g. "4:32"
     ap.add_argument("--lam-preact-dim", type=float, default=0.0)   # per-dim gate revival (learn-rank): keeps pruned dims revivable
+    ap.add_argument("--lam-atom", type=float, default=0.0)         # per-ATOM count cost (rank-independent): favor 1 higher-dim atom over a spanning split
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
@@ -114,6 +115,11 @@ def main():
         # l0 = sum_i rank_i*active_i (SUM over atoms -> capacity-invariant); .mean() over batch only
         lam_dec = a.lam_decorr * min(1.0, step / lam_warmup)           # same ramp as lam
         loss = recon + lam * l0.mean() + a.lam_preact * preact + lam_dec * decorr
+        if a.lam_atom > 0:
+            # per-ATOM count cost (rank-independent, sum over atoms): the rank-weighted l0 is
+            # indifferent to consolidation (1 rank-4 atom == 4 rank-1 atoms), so this fixed cost
+            # per active atom breaks the tie toward ONE higher-dim atom vs a spanning split. Ramped like lam.
+            loss = loss + a.lam_atom * min(1.0, step / lam_warmup) * active.sum(-1).float().mean()
         if a.learn_rank and a.lam_preact_dim > 0:
             # per-dim revival: constant upward push on pruned dim-biases (bias<0) so a dim driven
             # below the STE window stays revivable instead of freezing off forever. Analog of the
@@ -154,14 +160,15 @@ def main():
                 "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
                 "lam_preact_dim": a.lam_preact_dim,
                 "variants_per_type": a.variants_per_type, "p_active": a.p_active,
-                "l0": a.l0}, out / "ckpt.pt")
+                "l0": a.l0, "lam_atom": a.lam_atom}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
     eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,
                  extra={"lam": a.lam, "lam_preact": a.lam_preact, "jump_eps": a.jump_eps,
                         "lr": a.lr, "lr_schedule": a.lr_schedule, "lam_warmup_steps": lam_warmup,
                         "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
-                        "lam_preact_dim": a.lam_preact_dim, "l0": a.l0, "progress": progress})
+                        "lam_preact_dim": a.lam_preact_dim, "l0": a.l0,
+                        "lam_atom": a.lam_atom, "progress": progress})
 
 
 if __name__ == "__main__":
