@@ -1,0 +1,125 @@
+{
+ "circle_0": {
+  "n": 2,
+  "atoms": [
+   3,
+   26
+  ],
+  "within_corr": -0.025664275937266723
+ },
+ "circle_1": {
+  "n": 1,
+  "atoms": [
+   25
+  ],
+  "within_corr": -1.1102230246251565e-16
+ },
+ "sphere_0": {
+  "n": 1,
+  "atoms": [
+   18
+  ],
+  "within_corr": 0.0
+ },
+ "sphere_1": {
+  "n": 3,
+  "atoms": [
+   15,
+   17,
+   19
+  ],
+  "within_corr": 0.7411784760176369
+ },
+ "torus_0": {
+  "n": 3,
+  "atoms": [
+   22,
+   12,
+   4
+  ],
+  "within_corr": 0.10024102453276
+ },
+ "torus_1": {
+  "n": 1,
+  "atoms": [
+   38
+  ],
+  "within_corr": 0.0
+ },
+ "mobius_0": {
+  "n": 3,
+  "atoms": [
+   11,
+   13,
+   35
+  ],
+  "within_corr": 0.23303356123848115
+ },
+ "mobius_1": {
+  "n": 1,
+  "atoms": [
+   28
+  ],
+  "within_corr": 0.0
+ },
+ "swiss_roll_0": {
+  "n": 1,
+  "atoms": [
+   21
+  ],
+  "within_corr": 0.0
+ },
+ "swiss_roll_1": {
+  "n": 3,
+  "atoms": [
+   10,
+   9,
+   6
+  ],
+  "within_corr": 0.20373210463523708
+ },
+ "helix_0": {
+  "n": 1,
+  "atoms": [
+   30
+  ],
+  "within_corr": 0.0
+ },
+ "helix_1": {
+  "n": 2,
+  "atoms": [
+   29,
+   34
+  ],
+  "within_corr": -0.10046875218799856
+ },
+ "flat_disk_0": {
+  "n": 2,
+  "atoms": [
+   0,
+   8
+  ],
+  "within_corr": 0.8285385993989702
+ },
+ "flat_disk_1": {
+  "n": 1,
+  "atoms": [
+   23
+  ],
+  "within_corr": 0.0
+ },
+ "segment_0": {
+  "n": 1,
+  "atoms": [
+   7
+  ],
+  "within_corr": 0.0
+ },
+ "segment_1": {
+  "n": 1,
+  "atoms": [
+   14
+  ],
+  "within_corr": 0.0
+ }
+}

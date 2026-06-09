@@ -1,0 +1,38 @@
+{
+  "days": {
+    "fvu": 0.2564890682697296,
+    "atoms_per_token": 12.017857142857142,
+    "top_atom_fire_frac": 1.0,
+    "best_topology_corr": 0.8706766917293234,
+    "best_atom": 1856,
+    "best_atom_kind": "rank8",
+    "N": 56
+  },
+  "colors": {
+    "fvu": 0.5603696703910828,
+    "atoms_per_token": 13.980508933405522,
+    "top_atom_fire_frac": 1.0,
+    "best_topology_corr": 0.6916197568950034,
+    "best_atom": 1810,
+    "best_atom_kind": "rank8",
+    "N": 1847
+  },
+  "years": {
+    "fvu": 0.3977370858192444,
+    "atoms_per_token": 12.597989949748744,
+    "top_atom_fire_frac": 1.0,
+    "best_topology_corr": 0.9518623420130957,
+    "best_atom": 1817,
+    "best_atom_kind": "rank8",
+    "N": 199
+  },
+  "temperature": {
+    "fvu": 0.38121166825294495,
+    "atoms_per_token": 12.166666666666666,
+    "top_atom_fire_frac": 1.0,
+    "best_topology_corr": 0.9490537357215877,
+    "best_atom": 1071,
+    "best_atom_kind": "rank2",
+    "N": 150
+  }
+}

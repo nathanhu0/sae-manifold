@@ -1,0 +1,58 @@
+{
+ "circle": {
+  "di": 1,
+  "ki": 2,
+  "best_rank": 1,
+  "single_fvu": 0.04162997752428055,
+  "full_fvu": 0.044707734137773514
+ },
+ "sphere": {
+  "di": 2,
+  "ki": 3,
+  "best_rank": 1,
+  "single_fvu": 0.45938655734062195,
+  "full_fvu": 0.16508515179157257
+ },
+ "torus": {
+  "di": 2,
+  "ki": 4,
+  "best_rank": 3,
+  "single_fvu": 0.01634526439011097,
+  "full_fvu": 0.05664529278874397
+ },
+ "mobius": {
+  "di": 2,
+  "ki": 3,
+  "best_rank": 2,
+  "single_fvu": 0.00900826882570982,
+  "full_fvu": 0.053743552416563034
+ },
+ "swiss_roll": {
+  "di": 2,
+  "ki": 3,
+  "best_rank": 2,
+  "single_fvu": 0.09764795750379562,
+  "full_fvu": 0.13461291790008545
+ },
+ "helix": {
+  "di": 1,
+  "ki": 3,
+  "best_rank": 1,
+  "single_fvu": 0.21513009071350098,
+  "full_fvu": 0.18471568822860718
+ },
+ "flat_disk": {
+  "di": 2,
+  "ki": 2,
+  "best_rank": 3,
+  "single_fvu": 0.15403199195861816,
+  "full_fvu": 0.4993228018283844
+ },
+ "segment": {
+  "di": 1,
+  "ki": 1,
+  "best_rank": 2,
+  "single_fvu": 0.3462103009223938,
+  "full_fvu": 2.568330764770508
+ }
+}

@@ -1,0 +1,70 @@
+{
+  "days": {
+    "manifold": {
+      "best_atom": 1856,
+      "rank": 8,
+      "fire": 1.0,
+      "recovery": 0.8706766917293234,
+      "second": 0.6682159945317842,
+      "margin": 0.20246069719753923,
+      "null": 0.215437744284608,
+      "n_candidates": 4
+    },
+    "linear": {
+      "best_feat": 5044,
+      "recovery": 0.7798359535201641,
+      "n_candidates": 18
+    }
+  },
+  "colors": {
+    "manifold": {
+      "best_atom": 1311,
+      "rank": 2,
+      "fire": 0.9999999403953552,
+      "recovery": 0.6713147382541764,
+      "second": 0.6127952093964737,
+      "margin": 0.05851952885770273,
+      "null": 0.027943476470849615,
+      "n_candidates": 9
+    },
+    "linear": {
+      "best_feat": 30336,
+      "recovery": 0.7717242570449523,
+      "n_candidates": 50
+    }
+  },
+  "years": {
+    "manifold": {
+      "best_atom": 1032,
+      "rank": 2,
+      "fire": 1.0,
+      "recovery": 0.7797517892492768,
+      "second": 0.6795005329678696,
+      "margin": 0.10025125628140719,
+      "null": 0.08969544693162783,
+      "n_candidates": 5
+    },
+    "linear": {
+      "best_feat": 13765,
+      "recovery": 0.7550418760469012,
+      "n_candidates": 29
+    }
+  },
+  "temperature": {
+    "manifold": {
+      "best_atom": 1859,
+      "rank": 8,
+      "fire": 1.0,
+      "recovery": 0.9272749899995556,
+      "second": 0.9049273301035603,
+      "margin": 0.022347659895995298,
+      "null": 0.1320716476287835,
+      "n_candidates": 7
+    },
+    "linear": {
+      "best_feat": 13991,
+      "recovery": 0.9482394773101027,
+      "n_candidates": 44
+    }
+  }
+}

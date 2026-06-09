@@ -1,0 +1,7 @@
+manifold,rank,train_fvu,test_fvu,seam_score
+sphere,2,0.0025,0.0031,1.635
+sphere,3,0.0025,0.0025,1.004
+sphere,4,0.0025,0.0025,1.004
+geography,2,0.1401,0.2555,2.233
+geography,3,0.1137,0.1930,1.790
+geography,4,0.1069,0.1690,1.859

@@ -17,3 +17,11 @@ results/
 .DS_Store
 .idea/
 .vscode/
+
+# secrets
+.env
+.env.*
+
+# throwaway probes + session handoff (kept local, not committed)
+claude_scripts/
+LAST.md

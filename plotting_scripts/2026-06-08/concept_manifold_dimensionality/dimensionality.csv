@@ -1,0 +1,9 @@
+concept,N,functional_dof,twonn_intrinsic,linear_PR,PCs_90pct,PCs_95pct,topology
+colors,1847,3,8.70,5.20,14,32,"S^1 x I x I (hue cyclic, lightness, saturation)"
+age,99,1,10.40,5.93,14,22,line
+temperature,150,1,8.49,2.56,3,6,line (celsius redundant)
+geography,3008,2,3.74,41.48,85,141,"sphere S^2 (lat,long on Earth)"
+days,56,2,6.80,7.32,9,11,cylinder S^1 x interval (day cyclic x time)
+years,199,1,17.14,23.26,37,62,helix (1-D curve; decade=f(year))
+formality,1000,1,22.10,66.03,437,599,line (diverse sentences -> high ambient)
+sent_length,4983,1,14.24,27.18,553,993,line (diverse sentences -> high ambient)
