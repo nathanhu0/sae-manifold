@@ -102,11 +102,17 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         with torch.no_grad():
             xh_i, z_i, _, active_i, dec_i, _ = model.forward_jump(x_iso)
             contrib = active_i.unsqueeze(-1) * dec_i           # (n, N, d)
-            den = (x_iso ** 2).sum(-1, keepdim=True).clamp_min(1e-9)
-            fa = (((contrib - x_iso.unsqueeze(1)) ** 2).sum(-1) / den).mean(0)   # per-atom FVU
+            # AGGREGATE FVU = sum_n ||resid_n||^2 / sum_n ||x_n||^2. NOT the per-sample mean of ratios
+            # mean_n[||r_n||^2/||x_n||^2]: that divides each sample by its OWN energy and EXPLODES on
+            # origin-crossing manifolds (segment, ki=1, has samples with ||x||~0) -- a low-norm-sample
+            # artifact, not reconstruction error (the per-sample version reported segment 0/6 while its
+            # aggregate FVU is ~0.01; verified by claude_scripts/fvu_definition_stress_test.py). Data is
+            # per-instance mean-centered, so aggregate-energy == variance-FVU here.
+            tot = (x_iso ** 2).sum().clamp_min(1e-9)                              # scalar total energy
+            fa = ((contrib - x_iso.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / tot      # (N,) per-atom aggregate FVU
             best = int(fa.argmin()); r = int(round(float(atom_rank_vec[best])))
             single = float(fa[best])
-            full = float((((xh_i - x_iso) ** 2).sum(-1) / den.squeeze(-1)).mean())
+            full = float(((xh_i - x_iso) ** 2).sum() / tot)
             # which atoms actually carry this manifold: fraction of its points each fires on.
             # A split shows >=2 atoms each firing on a complementary chunk (e.g. ~50/50 arcs),
             # each with poor single FVU, but the union (full) reconstructs it.
