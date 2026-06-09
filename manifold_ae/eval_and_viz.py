@@ -132,12 +132,25 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                 theta=np.asarray(th_i)[ss, 0], rank=r, ki=int(inst.ki), best=best,
                 n_used=n_used, used_ids=str([a["atom"] for a in atoms[:4]]),
                 single=single, full=full)
+    # per-family CONTINUOUS aggregates (not just the discrete <thresh count): mean single/full FVU
+    # (catches near-misses -- "captured but off by a little"), mean atoms/manifold (= per-manifold L0,
+    # the spanning amount), mean dedicating-atom rank. Grouped by manifold type.
+    fam = {}
+    for r in rows:
+        fam.setdefault(r["type"], []).append(r)
+    per_family = {t: dict(
+        n=len(rs), captured_single=sum(r["single"] < thresh for r in rs),
+        mean_single_fvu=float(np.mean([r["single"] for r in rs])),
+        mean_full_fvu=float(np.mean([r["full"] for r in rs])),
+        atoms_per_manifold=float(np.mean([r["n_atoms_used"] for r in rs])),
+        mean_rank=float(np.mean([r["best_rank"] for r in rs]))) for t, rs in fam.items()}
     res = dict(fvu=fvu_mix, act_rank=float(l0.mean()), n_inst=len(rows),
                active_count_mean=float(act_count.mean()), active_count_std=float(act_count.std()),
                dead_atoms=int((~ever).sum()),
                captured_single=sum(m["single"] < thresh for m in rows),
                captured_full=sum(m["full"] < thresh for m in rows),
-               eval_mode="isolated", per_instance=rows)
+               mean_single_fvu=float(np.mean([m["single"] for m in rows])),
+               eval_mode="isolated", per_family=per_family, per_instance=rows)
     return res, tri
 
 
@@ -152,7 +165,13 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} "
           f"dead={res['dead_atoms']}  captured(isolated) single={res['captured_single']}/{res['n_inst']} "
-          f"full={res['captured_full']}/{res['n_inst']}", flush=True)
+          f"full={res['captured_full']}/{res['n_inst']}  mean_single_FVU={res['mean_single_fvu']:.3f}", flush=True)
+    # per-family CONTINUOUS view: mean FVU (near-misses) + atoms/manifold (spanning) + rank
+    print("  [per-family] type        cap   mean_single_FVU  mean_full_FVU  atoms/mfld  rank", flush=True)
+    for t in sorted(res["per_family"]):
+        d = res["per_family"][t]
+        print(f"   {t:13s} {d['captured_single']}/{d['n']}   {d['mean_single_fvu']:.3f}            "
+              f"{d['mean_full_fvu']:.3f}          {d['atoms_per_manifold']:.1f}         {d['mean_rank']:.1f}", flush=True)
     # per-manifold: which atoms carry it (best single vs the full participating set) -> splitting
     for m in sorted(res["per_instance"], key=lambda r: -r["full"]):
         ids = " ".join(f"{a['atom']}(r{a['rank']},{a['frac']*100:.0f}%)" for a in m["atoms"])

@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--pool", default="1:16,2:16,3:16,4:16")       # "rank:count,..." ; learn-rank -> homogeneous e.g. "4:32"
     ap.add_argument("--lam-preact-dim", type=float, default=0.0)   # per-dim gate revival (learn-rank): keeps pruned dims revivable
     ap.add_argument("--lam-atom", type=float, default=0.0)         # per-ATOM count cost (rank-independent): favor 1 higher-dim atom over a spanning split
+    ap.add_argument("--l0-rank-floor", action="store_true")        # charge >=1 per FIRING atom (rank-0 atoms cost 0 otherwise -> free always-on bias atoms)
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
@@ -114,7 +115,11 @@ def main():
             decorr = (cov ** 2).sum() - (cov.diag() ** 2).sum()        # off-diagonal squared
         # l0 = sum_i rank_i*active_i (SUM over atoms -> capacity-invariant); .mean() over batch only
         lam_dec = a.lam_decorr * min(1.0, step / lam_warmup)           # same ramp as lam
-        loss = recon + lam * l0.mean() + a.lam_preact * preact + lam_dec * decorr
+        # rank-0 atoms cost 0 in the rank-weighted l0, so an always-on rank-0 atom is FREE -> the
+        # optimizer parks "bias" crutches there. The floor charges >=1 per FIRING atom (rank>=1
+        # unchanged), so the sparsity grips the gate of a rank-0 atom and it dies or grows a dim.
+        l0_pen = (active * m.atom_ranks().clamp(min=1.0)).sum(-1) if a.l0_rank_floor else l0
+        loss = recon + lam * l0_pen.mean() + a.lam_preact * preact + lam_dec * decorr
         if a.lam_atom > 0:
             # per-ATOM count cost (rank-independent, sum over atoms): the rank-weighted l0 is
             # indifferent to consolidation (1 rank-4 atom == 4 rank-1 atoms), so this fixed cost
@@ -160,7 +165,8 @@ def main():
                 "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
                 "lam_preact_dim": a.lam_preact_dim,
                 "variants_per_type": a.variants_per_type, "p_active": a.p_active,
-                "l0": a.l0, "lam_atom": a.lam_atom}, out / "ckpt.pt")
+                "l0": a.l0, "lam_atom": a.lam_atom,
+                "l0_rank_floor": a.l0_rank_floor}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
     eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,
