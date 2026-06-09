@@ -44,7 +44,8 @@ def main():
     ap.add_argument("--eval-every", type=int, default=0)      # periodic capture eval (0 = only at end)
     ap.add_argument("--jump-eps", type=float, default=2.0)    # STE bandwidth, in raw pre-activation units
     ap.add_argument("--variants-per-type", type=int, default=2)  # 2 -> 16 manifolds
-    ap.add_argument("--p-active", type=float, default=0.25)   # independent presence prob per manifold
+    ap.add_argument("--p-active", type=float, default=0.25)   # independent Bernoulli presence prob (default mode)
+    ap.add_argument("--l0", type=int, default=None)           # constant-L0 presence (paper); set -> overrides p-active
     ap.add_argument("--enc-dims", type=str, default="128,64,32")  # per-atom encoder funnel (decoder mirrors)
     ap.add_argument("--lr-schedule", choices=["constant", "warmup_cosine"], default="constant")
     ap.add_argument("--lr-warmup-steps", type=int, default=2000)   # linear warmup before cosine decay
@@ -56,15 +57,18 @@ def main():
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
+    # presence mode: --l0 set -> constant-L0 (paper, exactly L0 active); else independent Bernoulli p_active.
+    samp_l0, pa = (a.l0, None) if a.l0 is not None else (None, a.p_active)  # 'l0' alone collides w/ forward_jump's L0 tensor
+    print(f"[presence] {'constant-L0=%d' % a.l0 if a.l0 is not None else 'Bernoulli p_active=%g' % a.p_active}", flush=True)
     torch.manual_seed(0)
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
     zoo = ManifoldZoo(d=D, seed=0, variants_per_type=a.variants_per_type)
-    x0, _ = zoo.sample(8192, None, np.random.default_rng(7), p_active=a.p_active)
+    x0, _ = zoo.sample(8192, samp_l0, np.random.default_rng(7), p_active=pa)
     scale = float(np.sqrt((x0 ** 2).mean()))
     rng = np.random.default_rng(1)
 
     def batch():
-        x, _ = zoo.sample(BATCH, None, rng, p_active=a.p_active)
+        x, _ = zoo.sample(BATCH, samp_l0, rng, p_active=pa)
         return torch.tensor(x, device=DEV) / scale
 
     m = ManifoldSAE(d_model=D, rank_dist=pool, enc_dims=enc_dims,
@@ -137,7 +141,7 @@ def main():
                       f"hist_active={torch.bincount(ara, minlength=m.max_rank + 1).tolist()} "
                       f"frozen_frac={frozen:.2f}", flush=True)
         if a.eval_every and step > 0 and step % a.eval_every == 0:
-            r, _ = compute_capture(m, zoo, scale, a.p_active, n=2000, n_iso=1000, want_tri=False)
+            r, _ = compute_capture(m, zoo, scale, pa, n=2000, n_iso=1000, want_tri=False, l0=samp_l0)
             progress.append(dict(step=step, fvu=r["fvu"], captured_single=r["captured_single"],
                                  captured_full=r["captured_full"], dead=r["dead_atoms"]))
             print(f"  [progress {step:>6}] FVU={r['fvu']:.4f} cap_single={r['captured_single']} "
@@ -149,14 +153,15 @@ def main():
                 "lr_warmup_steps": a.lr_warmup_steps, "lam_warmup_steps": lam_warmup,
                 "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
                 "lam_preact_dim": a.lam_preact_dim,
-                "variants_per_type": a.variants_per_type, "p_active": a.p_active}, out / "ckpt.pt")
+                "variants_per_type": a.variants_per_type, "p_active": a.p_active,
+                "l0": a.l0}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
-    eval_and_viz(m, zoo, scale, out, p_active=a.p_active,
+    eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,
                  extra={"lam": a.lam, "lam_preact": a.lam_preact, "jump_eps": a.jump_eps,
                         "lr": a.lr, "lr_schedule": a.lr_schedule, "lam_warmup_steps": lam_warmup,
                         "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
-                        "lam_preact_dim": a.lam_preact_dim, "progress": progress})
+                        "lam_preact_dim": a.lam_preact_dim, "l0": a.l0, "progress": progress})
 
 
 if __name__ == "__main__":

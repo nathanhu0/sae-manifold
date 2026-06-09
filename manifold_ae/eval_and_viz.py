@@ -76,7 +76,7 @@ def _strip(rows, thresh, path):
 
 
 def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh=0.05,
-                    cap=400, want_tri=True):
+                    cap=400, want_tri=True, l0=None):
     """Compute metrics (no file writes). Returns (res, tri).
 
     Global deployment metrics on real MIXTURES (FVU, active-count, dead atoms) + per-manifold
@@ -85,7 +85,8 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     if not want_tri -- skip it for cheap periodic evals)."""
     dev = next(model.parameters()).device
     rng = np.random.default_rng(123)
-    x, masks = zoo.sample(n, None, rng, p_active=p_active)
+    # mixture eval at the training presence mode: constant-L0 (paper) if l0 set, else Bernoulli.
+    x, masks = zoo.sample(n, l0, rng, p_active=(None if l0 is not None else p_active))
     xt = torch.tensor(x, device=dev) / scale
     with torch.no_grad():
         xh, z, gpre, active, dec, l0 = model.forward_jump(xt)
@@ -141,9 +142,9 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
 
 
 def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
-                 thresh=0.05, cap=400, extra=None):
+                 thresh=0.05, cap=400, extra=None, l0=None):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    res, tri = compute_capture(model, zoo, scale, p_active, n, n_iso, thresh, cap, want_tri=True)
+    res, tri = compute_capture(model, zoo, scale, p_active, n, n_iso, thresh, cap, want_tri=True, l0=l0)
     res.update(extra or {})
     json.dump(res, open(out / "metrics.json", "w"), indent=1)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
