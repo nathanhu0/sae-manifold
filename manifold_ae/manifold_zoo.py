@@ -153,17 +153,26 @@ class ManifoldZoo:
         truth[b,i]/theta[b,i] are populated only for active i. Backward compatible:
         (x,masks) and (x,masks,truth) contracts are unchanged.
 
-        p_active: if set, each manifold is present INDEPENDENTLY with this probability
-        (Bernoulli) -> the active count is Binomial(n_inst, p_active), a distribution
-        rather than a fixed L0. (L0 is ignored in this mode.)"""
+        Presence has TWO mutually-exclusive modes -- set EXACTLY ONE:
+          * L0 (int): constant-L0. Exactly L0 instances active per sample, drawn UNIFORMLY
+            WITHOUT REPLACEMENT -- the paper's |S|=L0 generative model.
+          * p_active (float): independent Bernoulli. Each instance present independently w.p.
+            p_active, so the active count is Binomial(n_inst, p_active), a distribution not a
+            fixed L0.
+        Passing both, or neither, raises (neither used to silently activate ALL instances)."""
         d, n_inst = self.d, self.n_inst
         max_di = max(inst.di for inst in self.instances)
         x = np.zeros((batch, d), np.float32)
+        if (L0 is None) == (p_active is None):
+            raise ValueError("sample(): set EXACTLY ONE of L0 (constant-L0, uniform w/o "
+                             "replacement) or p_active (independent Bernoulli presence).")
         if p_active is not None:
-            masks = rng.random((batch, n_inst)) < p_active   # independent presence
+            masks = rng.random((batch, n_inst)) < p_active        # independent Bernoulli presence
         else:
-            rr = rng.random((batch, n_inst))
-            active = np.argsort(rr, axis=1)[:, :L0]          # L0 distinct per row
+            if not 0 <= L0 <= n_inst:
+                raise ValueError(f"L0={L0} out of range [0, {n_inst}]")
+            order = rng.random((batch, n_inst)).argsort(axis=1)   # uniform random permutation/row
+            active = order[:, :L0]                                # first L0 = uniform w/o replacement
             masks = np.zeros((batch, n_inst), bool)
             masks[np.arange(batch)[:, None], active] = True
         truth = np.zeros((batch, n_inst, d), np.float32) if return_truth else None
