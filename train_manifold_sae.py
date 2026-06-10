@@ -78,7 +78,11 @@ def main():
     ap.add_argument("--res-blocks", type=int, default=0)           # standard two-matmul residual blocks at width enc_dims[-1] (winding stack)
     ap.add_argument("--block-expansion", type=int, default=2)      # inner width multiplier of each residual block
     a = ap.parse_args()
-    enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
+    # --enc-dims linear (or empty) -> FULLY LINEAR atoms: coord/gate heads read x directly,
+    # decoder is one linear map. Subspace-capture mode: the only learned nonlinearity is the
+    # gating (presence + per-dim rank masking).
+    enc_dims = (() if a.enc_dims in ("", "none", "linear")
+                else tuple(int(x) for x in a.enc_dims.split(",")))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
     # presence mode: --l0 set -> constant-L0 (paper, exactly L0 active); else independent Bernoulli p_active.
     samp_l0, pa = (a.l0, None) if a.l0 is not None else (None, a.p_active)  # 'l0' alone collides w/ forward_jump's L0 tensor

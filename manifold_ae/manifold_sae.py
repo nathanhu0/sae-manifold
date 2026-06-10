@@ -174,6 +174,8 @@ class ManifoldSAE(nn.Module):
         return z, gpre
 
     def decode_all(self, z):
+        if len(self.decs) == 1:                       # LINEAR atoms (subspace-capture mode):
+            return self.decs[0](z)                    # decoder = one linear map rank -> d_model
         h = self._step(self.decs[0], z)               # rank -> working width w
         for b1, b2 in self.dec_blocks:
             h = h + b2(F.gelu(b1(h)))
