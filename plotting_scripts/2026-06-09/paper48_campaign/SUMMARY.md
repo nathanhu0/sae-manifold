@@ -29,11 +29,11 @@ are the corrected ones**; the old per-sample numbers are preserved in each run's
    winner tiled is only 39 (= single 38 + segment_0), so the single→full gap (38→45) is **mostly
    redundant overlap, not atlases**. Metric also made reproducible (per-instance rng; FVUs were
    order/`n`-dependent, max|Δ|1.8e-2 → 0) + provenance + stable firing-floor dead count.
-3. **λ never reached target (training-config).** Every campaign run left `--lam-warmup-steps`
-   unset → λ ramped 0→target over the **whole** 150k run, hitting target only at the final step as
-   the cosine LR decayed to ~0. **The runs never actually trained AT their nominal λ.** A fix grid
-   (`--lam-warmup-steps 50000` to HOLD λ + anti-split levers) is running in
-   `runs/2026-06-09_paper48_floorhold/`.
+3. **λ never reached target (training-config) — but holding it was REFUTED.** Every campaign run left
+   `--lam-warmup-steps` unset → λ ramped 0→target over the **whole** 150k run, hitting target only at the
+   final step. The hypothesis that this caused under-dedication was TESTED (`floorhold`,
+   `--lam-warmup-steps 50000`): **holding λ=0.003 OVER-pruned and HURT capture on every lens** (single
+   38→20-31). The gentle ramp's lower effective-λ was beneficial. → use `lam_atom` on the gentle recipe (§6).
 
 **The within-family "catastrophic failures" are GENUINE model dedication failures, not metric/OOD
 bugs** — confirmed by conditional-FVU, in-mixture ground-truth attribution, gate-margin probes, and
@@ -63,8 +63,9 @@ rule ×1/×2).
   cell (44/45/47) tops lr3e-4's best (37/43/47). lr3e-4 still wins on `full` (48 vs 33 at the
   lrsweep cells) and rank-efficiency; the two are close, not a blowout.
 - **K8 ≫ K4 still holds** for single/tiled (K4 best tiled ~33 vs K8 ~45); K4's `full` is fine.
-- **The gap is optimization, not objective:** oracle floor unreached, data-scaling flat, but the
-  λ-never-held config error + 14 idle dead atoms are concrete, fixable levers (training fix running).
+- **The gap is optimization, not objective:** oracle floor unreached, data-scaling flat. The
+  λ-hold "fix" was REFUTED (it over-prunes — see §6); the live lever is `lam_atom` on the gentle recipe.
+- **Authoritative per-cell numbers:** `reeval_corrected/reeval_comparison.md` (all 65 cells, strict tiled).
 
 ## 1. LR sweep (lrsweep, K8) — corrected single / tiled / full
 | lr | single | tiled | full | FVU | act_rank | dead |
@@ -147,9 +148,12 @@ floor `k8/λ0.003/1×` cell is the canonical low-rank operating point (single 38
 - `rank_dist.png`, `firing_matrix*.png` — per-atom rank / firing structure (rank-based, unaffected
   by the FVU fix).
 
-## Open threads / next
-1. **Training fix (running, `floorhold`):** does holding λ at target (`--lam-warmup-steps 50000`) +
-   anti-split (`lam_atom` / `lam_decorr`) collapse the splits and revive the 14 dead atoms?
-2. **Report over seeds:** which variant loses dedication is random — average capture over ≥3 seeds.
-3. **0-D feature test** — seed the zoo with discrete features; check learn-rank parks them at rank-0.
-4. Sphere/closed-surface multi-chart handling remains the genuine hard case (needs ≥2 charts).
+## Open threads / next (none running)
+1. **`lam_atom` on the GENTLE-λ floor** (no hold): `--lam-atom {0.003,0.01,0.03}`, ≥2 seeds — the clean-
+   tiling lever (atomcost already reaches tiled 46). The top experiment.
+2. **Gate STE bake-off:** sigmoid-surrogate `(x>0)+sigmoid(x)−sigmoid(x).detach()` vs rectangular vs
+   hard-concrete — does the nonzero-everywhere gradient let us DROP the revival aux loss? (NB the sigmoid
+   freezes the bandwidth param, doesn't remove it.) `--gate-grad {rect,sigmoid}`, A/B + a "no-revival" arm.
+3. **Report over seeds:** which variant loses dedication is random — average capture over ≥3 seeds.
+4. **0-D feature test** — seed the zoo with discrete features; check learn-rank parks them at rank-0.
+5. Sphere/closed-surface multi-chart handling remains the genuine hard case (needs ≥2 charts).
