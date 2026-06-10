@@ -7,9 +7,9 @@ ONE forward pass -> into out_dir:
   * report.md : the whole eval as one artifact -- headline + per-family tables, then a
     section per manifold family embedding its figures.
   * fvu_strip.png : per-instance single & full FVU vs the 0.05 cutoff (sorted).
-  * triptych_<family>.png : per manifold, CANONICAL (target in V_i coords) | LATENT (the
-    best atom's encoder z, its learned chart) | DECODER (that atom's reconstruction) |
-    FULL-model recon, colored by the canonical angle so structure preservation is visible.
+  * grid_{target,latent,single_recon,full_recon}.png : four 8x6 grids (families x variants) --
+    CANONICAL target (in V_i coords) | best atom's latent chart | that atom's reconstruction |
+    FULL-model recon, colored by the canonical coordinate so structure preservation is visible.
   * tiling_<name>.png : per multi-atom manifold, the per-atom view -- owner-colored target,
     then each participating atom's latent + reconstruction in its own color.
 
@@ -141,38 +141,39 @@ def _tiling_fig(nm, t, path):
     fig.savefig(path, dpi=120); plt.close(fig)
 
 
-def _triptych(tri, out_dir):
-    """Per manifold (isolated samples): canonical -> best-atom chart -> best-atom recon ->
-    FULL-model recon. Columns 3 vs 4 make splitting visible: if the manifold is split across
-    atoms, the best single atom (col 3) covers only an arc while the full model (col 4) covers
-    it -- and col 4's title lists the participating atom indices.
-    ONE figure per manifold FAMILY (triptych_<family>.png); returns {family: filename}."""
+def _grids(tri, out_dir):
+    """Condensed all-manifold views: FOUR 8x6 grids (rows = families, cols = variants), one per
+    quantity -- ground-truth target | best-atom latent chart | single best-atom recon |
+    full-model recon. One screenful each instead of 8 tall per-family files; the canonical
+    color gradient (global theta range, hsv only where coord 0 wraps) makes the four grids
+    cross-readable cell by cell. Returns {key: filename}."""
     fams = {}
     for nm, t in tri.items():
         fams.setdefault(t["type"], []).append(nm)
+    fam_names = sorted(fams)
+    nrows = len(fam_names); ncols = max(len(v) for v in fams.values())
+    specs = [
+        ("target", "grid_target.png", "Ground-truth manifolds (canonical coords)",
+         lambda t: f"{t['di']}D in {t['ki']}D"),
+        ("latent", "grid_latent.png", "Best-atom latent charts",
+         lambda t: f"atom {t['best']} rank {t['rank']}"),
+        ("decoder", "grid_single_recon.png", "Single best-atom reconstructions",
+         lambda t: f"FVU {t['single']:.3f}"),
+        ("full_recon", "grid_full_recon.png", "Full-model reconstructions",
+         lambda t: f"{t['n_used']} atoms, FVU {t['full']:.3f}"),
+    ]
     paths = {}
-    for fam, names in fams.items():
-        n = len(names); ncols = 4
-        fig = plt.figure(figsize=(13, 3.1 * n))
-        for r, nm in enumerate(names):
-            t = tri[nm]
-            cm = _theta_cmap(t["type"])
-            _cell(fig, n, ncols, r, 0, t["target"], t["theta"],
-                  f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical", cmap=cm)
-            _cell(fig, n, ncols, r, 1, t["latent"], t["theta"],
-                  f"best atom {t['best']} chart (r{t['rank']})", cmap=cm)
-            _cell(fig, n, ncols, r, 2, t["decoder"], t["theta"],
-                  f"best-atom recon — single FVU {t['single']:.3f}", cmap=cm)
-            _cell(fig, n, ncols, r, 3, t["full_recon"], t["theta"],
-                  f"full model ({t['n_used']} atoms {t['used_ids']}) — full FVU {t['full']:.3f}", cmap=cm)
-        t0 = tri[names[0]]
-        fig.suptitle(f"{fam} ({t0['di']}D manifold in {t0['ki']}D subspace), isolated: canonical -> "
-                     "best-atom chart -> best-atom recon -> FULL-model recon (colored by canonical angle)",
-                     fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.98])
-        fname = f"triptych_{fam}.png"
-        fig.savefig(Path(out_dir) / fname, dpi=120); plt.close(fig)
-        paths[fam] = fname
+    for key, fname, title, sub in specs:
+        fig = plt.figure(figsize=(2.1 * ncols, 2.05 * nrows))
+        for r, fam in enumerate(fam_names):
+            for c, nm in enumerate(sorted(fams[fam])):
+                t = tri[nm]
+                _cell(fig, nrows, ncols, r, c, t[key], t["theta"],
+                      f"{nm}  {sub(t)}", cmap=_theta_cmap(t["type"]))
+        fig.suptitle(f"{title} — rows: families, cols: variants", fontsize=13)
+        fig.tight_layout(rect=[0, 0, 1, 0.985])
+        fig.savefig(Path(out_dir) / fname, dpi=110); plt.close(fig)
+        paths[key] = fname
     return paths
 
 
@@ -472,7 +473,7 @@ def _rank_fvu_fig(res, path, thresh):
 def _report_md(res, tri_paths, tiling_paths, out, thresh):
     """report.md: the whole eval as ONE self-contained artifact -- headline metrics, the per-family
     capture table, then a section per manifold family: per-instance verdict table, the family
-    triptych, and the per-atom tiling view of every multi-atom manifold in it."""
+    glance grids, and the per-atom tiling view of every multi-atom manifold."""
     N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2*thresh:.3f}"]
     L = [f"# Eval report — {out.name}\n",
          f"presence `{res['presence']}` · n={res['eval_n']} (mixture) / {res['eval_n_iso']} (isolated)"
@@ -499,6 +500,9 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
                  f"{d['tiled_charts_mean']:.1f} | {d['mean_single_fvu']:.3f} | {d['mean_full_fvu']:.3f} | "
                  f"{d['atoms_per_manifold']:.1f} | {d['mean_rank']:.1f} |")
     L.append("\n![per-family rank vs FVU, cutoff-free](rank_vs_fvu.png)\n")
+    L.append("\n## All manifolds at a glance (8 x 6 grids)\n")
+    for key, fname in tri_paths.items():
+        L.append(f"\n![{key} grid]({fname})\n")
     L.append("\n![per-instance FVU strip](fvu_strip.png)\n")
     fam_rows = {}
     for m in res["per_instance"]:
@@ -515,8 +519,6 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
             atoms = " ".join(f"{a['atom']}(r{a['rank']},{a['frac']*100:.0f}%)" for a in m["atoms"][:4])
             L.append(f"| {m['name']} | {m['single']:.3f} (atom {m['best_atom']}) | {m['full']:.3f} | "
                      f"{m['cond_fvu']:.3f} | {m['frac_overlap']*100:.0f}% | {verdict} | {atoms} |")
-        if fam in tri_paths:
-            L.append(f"\n![{fam} triptych]({tri_paths[fam]})\n")
         for m in ms:
             if m["name"] in tiling_paths:
                 L.append(f"\n### {m['name']} — per-atom tiling view\n\n"
@@ -532,7 +534,7 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     json.dump(res, open(out / "metrics.json", "w"), indent=1)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
     _rank_fvu_fig(res, out / "rank_vs_fvu.png", thresh)
-    tri_paths = _triptych(tri, out)
+    tri_paths = _grids(tri, out)
     tiling_paths = {}
     for nm, t in tri.items():
         if len(t["atoms_viz"]) >= 2:                # the per-atom view only says something for >=2 atoms
@@ -580,7 +582,7 @@ def load_checkpoint(ckpt_path, device="cpu"):
 
 if __name__ == "__main__":
     # Canonical single-checkpoint eval: `python -m manifold_ae.eval_and_viz <ckpt.pt|run_dir>`
-    # -> writes metrics.json + fvu_strip.png + triptych.png into the run dir and prints the full suite.
+    # -> writes metrics.json + report.md + all figures into the run dir and prints the full suite.
     import argparse
     ap = argparse.ArgumentParser(description="Evaluate a manifold-SAE checkpoint (full capture suite).")
     ap.add_argument("ckpt", help="path to ckpt.pt, or a run dir containing ckpt.pt")
