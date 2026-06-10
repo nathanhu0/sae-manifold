@@ -53,7 +53,8 @@ for ax in axes[-1]:
     ax.set_xlabel("best atom rank")
 handles = [plt.Line2D([], [], marker="o", ls="", color=f"C{ci}",
                       label=f"lam{m['lam']:g}_atom{m.get('lam_atom', 0) or 0:g} "
-                            f"({m['atoms_per_sample_mean']:.1f} atoms/spl)")
+                            f"({m['atoms_per_sample_mean']:.1f} atoms/spl, "
+                            f"{m['captured_single']} atoms learned/48)")
            for ci, m in enumerate(chosen)]
 fig.legend(handles=handles, loc="upper right", fontsize=8)
 fig.suptitle("Single-atom capture, the 4 runs nearest atoms/sample = 4 (lambda 0.001 + 0.003 rows)",
