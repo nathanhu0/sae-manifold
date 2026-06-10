@@ -210,6 +210,7 @@ def _inmixture_capture(model, zoo, scale, dev, l0, p_active, thresh, n=4000):
     per_type = {}
     fvus = []
     per_inst = {}
+    rank_vec = model.rank_gate().detach().sum(-1)                       # (N,) per-atom learned/fixed rank
     for i, inst in enumerate(zoo.instances):
         sel = masks_t[:, i].bool()
         if int(sel.sum()) < 5:
@@ -218,9 +219,9 @@ def _inmixture_capture(model, zoo, scale, dev, l0, p_active, thresh, n=4000):
         csel = active[sel].unsqueeze(-1) * dec[sel]                     # (n_sel, N, d) each atom's mixture output
         den = (ti ** 2).sum().clamp_min(1e-9)
         fa = ((csel - ti.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / den      # (N,) per-atom in-mixture aggregate FVU
-        s = float(fa.min())
+        best = int(fa.argmin()); s = float(fa[best])
         fvus.append(s)
-        per_inst[inst.name] = s
+        per_inst[inst.name] = dict(fvu=s, atom=best, rank=int(round(float(rank_vec[best]))))
         per_type.setdefault(inst.type, []).append(s)
     captured = sum(s < thresh for s in fvus)
     per_type_cap = {t: sum(s < thresh for s in ss) for t, ss in per_type.items()}
@@ -371,7 +372,10 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         inmix_captured, inmix_mean_fvu, inmix_per_type, inmix_per_inst = _inmixture_capture(
             model, zoo, scale, dev, l0_presence, p_active, thresh)
         for r in rows:                                  # per-manifold deployment FVU next to the isolated ones
-            r["inmix_fvu"] = inmix_per_inst.get(r["name"], float("nan"))
+            pi = inmix_per_inst.get(r["name"])
+            r["inmix_fvu"] = pi["fvu"] if pi else float("nan")
+            r["inmix_best_atom"] = pi["atom"] if pi else None
+            r["inmix_best_rank"] = pi["rank"] if pi else None
     else:
         inmix_captured, inmix_mean_fvu, inmix_per_type = None, None, None
     # per-family CONTINUOUS aggregates (not just the discrete <thresh count): mean single/full FVU
@@ -416,6 +420,55 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     return res, tri
 
 
+def _rank_fvu_fig(res, path, thresh):
+    """Per-run, cutoff-free capture summary: one panel per manifold FAMILY; x = atom rank,
+    y = FVU (log); thresholds drawn as reference lines only. Each color is a different FVU
+    lens, plotted at the rank of the atom it actually measures:
+      blue  = single (best whole-manifold atom, at that atom's rank)
+      green = one-chart-at-a-time (EACH participating atom's conditional FVU at ITS rank)
+      orange= in-mixture single (best deployment atom, at its rank)
+    full/union has no single-atom rank -- it is a separate criterion, not shown here."""
+    fams = {}
+    for m in res["per_instance"]:
+        fams.setdefault(m["type"], []).append(m)
+    names = sorted(fams)
+    ncols = (len(names) + 1) // 2
+    fig, axes = plt.subplots(2, ncols, figsize=(3.3 * ncols, 7.2), squeeze=False, sharey=True)
+    rng = np.random.default_rng(0)
+    jit = lambda: rng.uniform(-0.16, 0.16)
+    for ax, fam in zip(axes.flat, names):
+        ms = fams[fam]
+        for m in ms:
+            ax.scatter(m["best_rank"] + jit(), max(m["single"], 1e-4), c="C0", s=30, linewidths=0)
+            for a in m["atoms"]:
+                if a["cond_fvu"] == a["cond_fvu"]:                     # skip NaN (rarely-firing atom)
+                    ax.scatter(a["rank"] + jit(), max(a["cond_fvu"], 1e-4), c="C2", s=16,
+                               alpha=0.65, linewidths=0)
+            if m.get("inmix_best_rank") is not None:
+                ax.scatter(m["inmix_best_rank"] + jit(), max(m["inmix_fvu"], 1e-4), c="C1",
+                           s=30, marker="^", linewidths=0)
+        for th, ls in [(thresh, "--"), (2 * thresh, ":")]:
+            ax.axhline(th, color="red", ls=ls, lw=0.9, alpha=0.6)
+        ax.set_yscale("log"); ax.set_ylim(8e-5, 12)
+        ax.set_title(f"{fam} — {ms[0]['di']}D manifold in {ms[0]['ki']}D subspace", fontsize=8)
+        ax.set_xticks(range(0, int(max(5, max(m['best_rank'] for m in ms) + 2))))
+        ax.grid(alpha=0.2)
+    for ax in axes.flat[len(names):]:
+        ax.axis("off")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("FVU (log)")
+    for ax in axes[-1]:
+        ax.set_xlabel("atom rank")
+    handles = [plt.Line2D([], [], marker="o", ls="", color="C0", label="single (best atom)"),
+               plt.Line2D([], [], marker="o", ls="", color="C2", label="per-chart conditional"),
+               plt.Line2D([], [], marker="^", ls="", color="C1", label="in-mixture single")]
+    fig.legend(handles=handles, loc="upper right", fontsize=8)
+    fig.suptitle("Capture without cutoffs: per-family atom rank vs FVU "
+                 f"(red lines = {thresh:g} / {2*thresh:g} reference)", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(path, dpi=140); plt.close(fig)
+
+
 def _report_md(res, tri_paths, tiling_paths, out, thresh):
     """report.md: the whole eval as ONE self-contained artifact -- headline metrics, the per-family
     capture table, then a section per manifold family: per-instance verdict table, the family
@@ -445,6 +498,7 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
         L.append(f"| {t} | {d['captured_single']}/{d['n']} | {d['captured_tiled']}/{d['n']} | "
                  f"{d['tiled_charts_mean']:.1f} | {d['mean_single_fvu']:.3f} | {d['mean_full_fvu']:.3f} | "
                  f"{d['atoms_per_manifold']:.1f} | {d['mean_rank']:.1f} |")
+    L.append("\n![per-family rank vs FVU, cutoff-free](rank_vs_fvu.png)\n")
     L.append("\n![per-instance FVU strip](fvu_strip.png)\n")
     fam_rows = {}
     for m in res["per_instance"]:
@@ -477,6 +531,7 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     res.update(extra or {})
     json.dump(res, open(out / "metrics.json", "w"), indent=1)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
+    _rank_fvu_fig(res, out / "rank_vs_fvu.png", thresh)
     tri_paths = _triptych(tri, out)
     tiling_paths = {}
     for nm, t in tri.items():

@@ -283,8 +283,9 @@ def main():
     paretos(rows)
     fvu_ecdf(rows)
     per_family(rows)
-    rank_vs_fvu(rows)
     side_tables(rows)
+    # NB the cutoff-free rank-vs-FVU view is a PER-RUN figure now (rank_vs_fvu.png in each run
+    # dir, built by eval_and_viz._rank_fvu_fig); the aggregation links the best runs' reports.
     print(f"wrote figures + tables to {OUT_DIR}")
 
 
