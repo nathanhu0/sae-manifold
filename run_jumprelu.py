@@ -56,25 +56,28 @@ def main():
     ap.add_argument("--lam-preact-dim", type=float, default=0.0)   # per-dim gate revival (learn-rank): keeps pruned dims revivable
     ap.add_argument("--lam-atom", type=float, default=0.0)         # per-ATOM count cost (rank-independent): favor 1 higher-dim atom over a spanning split
     ap.add_argument("--l0-rank-floor", action="store_true")        # charge >=1 per FIRING atom (rank-0 atoms cost 0 otherwise -> free always-on bias atoms)
+    ap.add_argument("--gate-grad", choices=["rect", "sigmoid"], default="rect")  # gate backward: rect STE vs sigmoid' surrogate (both gate levels)
+    ap.add_argument("--seed", type=int, default=0)                 # init + batch-order seed; zoo GEOMETRY stays seed=0
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
     # presence mode: --l0 set -> constant-L0 (paper, exactly L0 active); else independent Bernoulli p_active.
     samp_l0, pa = (a.l0, None) if a.l0 is not None else (None, a.p_active)  # 'l0' alone collides w/ forward_jump's L0 tensor
     print(f"[presence] {'constant-L0=%d' % a.l0 if a.l0 is not None else 'Bernoulli p_active=%g' % a.p_active}", flush=True)
-    torch.manual_seed(0)
+    torch.manual_seed(a.seed)
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
     zoo = ManifoldZoo(d=D, seed=0, variants_per_type=a.variants_per_type)
     x0, _ = zoo.sample(8192, samp_l0, np.random.default_rng(7), p_active=pa)
     scale = float(np.sqrt((x0 ** 2).mean()))
-    rng = np.random.default_rng(1)
+    rng = np.random.default_rng(a.seed + 1)
 
     def batch():
         x, _ = zoo.sample(BATCH, samp_l0, rng, p_active=pa)
         return torch.tensor(x, device=DEV) / scale
 
     m = ManifoldSAE(d_model=D, rank_dist=pool, enc_dims=enc_dims,
-                    jump_eps=a.jump_eps, learn_rank=a.learn_rank).to(DEV)
+                    jump_eps=a.jump_eps, learn_rank=a.learn_rank,
+                    gate_grad=a.gate_grad).to(DEV)
     opt = torch.optim.Adam(m.parameters(), lr=a.lr)
     # lambda schedule: ramp 0 -> target over lam_warmup_steps, then HOLD. Default (None) =
     # ramp over the whole run (legacy). Holding at target is what lets the model actually
@@ -166,7 +169,8 @@ def main():
                 "lam_preact_dim": a.lam_preact_dim,
                 "variants_per_type": a.variants_per_type, "p_active": a.p_active,
                 "l0": a.l0, "lam_atom": a.lam_atom,
-                "l0_rank_floor": a.l0_rank_floor}, out / "ckpt.pt")
+                "l0_rank_floor": a.l0_rank_floor, "gate_grad": a.gate_grad,
+                "seed": a.seed}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
     eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,
@@ -174,7 +178,8 @@ def main():
                         "lr": a.lr, "lr_schedule": a.lr_schedule, "lam_warmup_steps": lam_warmup,
                         "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
                         "lam_preact_dim": a.lam_preact_dim, "l0": a.l0,
-                        "lam_atom": a.lam_atom, "progress": progress})
+                        "lam_atom": a.lam_atom, "gate_grad": a.gate_grad,
+                        "seed": a.seed, "progress": progress})
 
 
 if __name__ == "__main__":

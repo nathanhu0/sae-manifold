@@ -74,7 +74,8 @@ class BatchedLinear(nn.Module):
 
 class ManifoldSAE(nn.Module):
     def __init__(self, d_model=4096, rank_dist=None, R_target=100,
-                 enc_dims=(256, 128, 64), jump_eps=2.0, learn_rank=False):
+                 enc_dims=(256, 128, 64), jump_eps=2.0, learn_rank=False,
+                 gate_grad="rect"):
         super().__init__()
         rank_dist = rank_dist or {1: 128, 2: 64, 3: 32, 4: 16}
         ranks = [r for r, c in sorted(rank_dist.items()) for _ in range(c)]
@@ -101,6 +102,11 @@ class ManifoldSAE(nn.Module):
         self.b_dec = nn.Parameter(torch.zeros(d_model))
         # JumpReLU STE bandwidth, in RAW pre-activation units (gpre>0 is the gate boundary).
         self.jump_eps = jump_eps
+        # gate_grad: backward estimator for BOTH gate levels (presence + learn-rank dim bias).
+        # "rect" = rectangular STE of width jump_eps; "sigmoid" = sigmoid' surrogate (forward
+        # stays exact-hard), nonzero EVERYWHERE -- candidate to replace the revival losses.
+        assert gate_grad in ("rect", "sigmoid")
+        self.gate_grad = gate_grad
         # learn_rank: each atom learns WHICH of its max_rank latent dims to use, via a static
         # per-dim bias gated by the same straight-through Heaviside (bias>0 -> dim on). The pool's
         # rank then becomes the MAX rank; the effective rank emerges. init at +0.5 (inside the STE
@@ -109,11 +115,22 @@ class ManifoldSAE(nn.Module):
         if learn_rank:
             self.dim_bias = nn.Parameter(torch.full((N, self.max_rank), 0.5))
 
+    def _gate(self, pre):
+        """{0,1} gate from a raw pre-activation. Forward is the exact Heaviside either way;
+        backward depends on gate_grad: rect = rectangular pseudo-gradient of width jump_eps
+        (zero outside the window); sigmoid = sigmoid'(pre/T) with T = jump_eps/4 (matches the
+        rect's peak gradient 1/eps at the boundary) -- nonzero everywhere, so components driven
+        far negative keep receiving gradient without a revival loss."""
+        if self.gate_grad == "sigmoid":
+            s = torch.sigmoid(pre / (self.jump_eps / 4))
+            return (pre > 0).to(pre.dtype) + s - s.detach()
+        return STEHeaviside.apply(pre, self.jump_eps)
+
     def rank_gate(self):
         """(N, max_rank) {0,1} mask of which latent dims each atom uses. Fixed pool -> static
         rank_mask; learn_rank -> straight-through Heaviside on a learned per-dim bias (bias>0 = on)."""
         if self.learn_rank:
-            return STEHeaviside.apply(self.dim_bias, self.jump_eps)
+            return self._gate(self.dim_bias)
         return self.rank_mask
 
     def atom_ranks(self):
@@ -146,7 +163,7 @@ class ManifoldSAE(nn.Module):
         gpre (the pre-act/dead-atom loss pushes gpre up toward 0), active (0/1), dec, and
         the per-sample rank-weighted L0."""
         z, gpre = self.encode(x - self.b_dec)
-        active = STEHeaviside.apply(gpre, self.jump_eps)   # H(gpre > 0); bandwidth in pre-act units
+        active = self._gate(gpre)                          # H(gpre > 0); backward per gate_grad
         dec = self.decode_all(z)                           # (B, N, d_model)
         x_hat = (active.unsqueeze(-1) * dec).sum(dim=1) + self.b_dec
         l0 = (active * self.atom_ranks()).sum(dim=-1)      # (B,) rank-weighted dof (learned rank if on)

@@ -4,10 +4,14 @@ ONE forward pass -> into out_dir:
   * metrics.json : overall FVU, active-count distribution (Binomial under independent
     presence), dead atoms, and per-instance best-single-atom FVU + full-model (union)
     FVU + best-atom rank; captured counts (single & full, < thresh).
+  * report.md : the whole eval as one artifact -- headline + per-family tables, then a
+    section per manifold family embedding its figures.
   * fvu_strip.png : per-instance single & full FVU vs the 0.05 cutoff (sorted).
-  * triptych.png  : per manifold, CANONICAL (target in V_i coords) | LATENT (the best
-    atom's encoder z, its learned chart) | DECODER (that atom's reconstruction), colored
-    by the canonical angle so structure preservation is visible.
+  * triptych_<family>.png : per manifold, CANONICAL (target in V_i coords) | LATENT (the
+    best atom's encoder z, its learned chart) | DECODER (that atom's reconstruction) |
+    FULL-model recon, colored by the canonical angle so structure preservation is visible.
+  * tiling_<name>.png : per multi-atom manifold, the per-atom view -- owner-colored target,
+    then each participating atom's latent + reconstruction in its own color.
 
 Built for the small zoo (few variants/type, independent p_active presence). The forward
 runs on whatever device the model is on (i.e. inside the training job, on jag).
@@ -22,40 +26,113 @@ import numpy as np
 import torch
 
 
-def _cell(fig, n, ncols, r, c, arr, color, title):
+def _cell(fig, n, ncols, r, c, arr, color, title, cmap="hsv"):
     """One panel. 3D scatter when the data has >=3 dims, else 2D / 1D."""
     dim = arr.shape[1]
     ax = fig.add_subplot(n, ncols, r * ncols + c + 1, projection="3d" if dim >= 3 else None)
     if dim >= 3:
-        ax.scatter(arr[:, 0], arr[:, 1], arr[:, 2], c=color, cmap="hsv", s=6,
+        ax.scatter(arr[:, 0], arr[:, 1], arr[:, 2], c=color, cmap=cmap, s=6,
                    alpha=0.7, linewidths=0)
         ax.set_zticks([])
     else:
         ys = arr[:, 1] if dim >= 2 else np.zeros_like(arr[:, 0])
-        ax.scatter(arr[:, 0], ys, c=color, cmap="hsv", s=8, alpha=0.75, linewidths=0)
+        ax.scatter(arr[:, 0], ys, c=color, cmap=cmap, s=8, alpha=0.75, linewidths=0)
     ax.set_xticks([]); ax.set_yticks([])
     ax.set_title(title, fontsize=8)
+    return ax
 
 
-def _triptych(tri, path):
+def _atom_cmap(j):
+    """Light->dark colormap of ONE base color (tab10 cycle): the hue identifies the atom,
+    the intensity tracks the canonical coordinate -- so cross-referencing a latent panel with
+    a reconstruction panel (or the owner panel) works by hue AND position along the manifold."""
+    from matplotlib.colors import LinearSegmentedColormap, to_rgb
+    base = to_rgb(plt.get_cmap("tab10")(j % 10))
+    light = tuple(1 - 0.3 * (1 - c) for c in base)             # 70% toward white
+    dark = tuple(0.55 * c for c in base)
+    return LinearSegmentedColormap.from_list(f"atom{j}", [light, base, dark])
+
+
+def _scatter_sel(ax, arr, sel, dim, **kw):
+    """Scatter the selected rows of arr on an existing axes (2D/3D handled)."""
+    if not sel.any():
+        return
+    if dim >= 3:
+        ax.scatter(arr[sel, 0], arr[sel, 1], arr[sel, 2], s=6, linewidths=0, **kw)
+    else:
+        ys = arr[sel, 1] if dim >= 2 else np.zeros(int(sel.sum()))
+        ax.scatter(arr[sel, 0], ys, s=8, linewidths=0, **kw)
+
+
+def _tiling_fig(nm, t, path):
+    """Per-atom view of a multi-atom manifold. Top row: canonical target colored by the canonical
+    coordinate, then by OWNING atom (gray = no atom fires, black = >=2 fire at once). Below, one row
+    per participating atom: its latent chart and its reconstruction on its own firing region, in the
+    atom's color with intensity = canonical coordinate. A clean tiling reads as complementary
+    solid-color chunks; redundant overlap reads as black in the owner panel."""
+    av = t["atoms_viz"]
+    n = 1 + len(av); ncols = 2; dim = t["target"].shape[1]
+    fig = plt.figure(figsize=(8, 3.1 * n))
+    _cell(fig, n, ncols, 0, 0, t["target"], t["theta"],
+          f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical")
+    ax = fig.add_subplot(n, ncols, 2, projection="3d" if dim >= 3 else None)
+    cover = np.sum([a["fire_ss"] for a in av], axis=0)
+    _scatter_sel(ax, t["target"], cover == 0, dim, c="0.85")
+    for j, a in enumerate(av):
+        sel = a["fire_ss"] & (cover == 1)
+        _scatter_sel(ax, t["target"], sel, dim, c=t["theta"][sel], cmap=_atom_cmap(j), alpha=0.85)
+    _scatter_sel(ax, t["target"], cover >= 2, dim, c="k", alpha=0.5)
+    ax.set_xticks([]); ax.set_yticks([])
+    if dim >= 3:
+        ax.set_zticks([])
+    ax.set_title(f"owning atom (gray=uncovered, black=overlap; overlap {t['frac_overlap']*100:.0f}%)",
+                 fontsize=8)
+    for j, a in enumerate(av):
+        cm = _atom_cmap(j)
+        cond = "n/a" if np.isnan(a["cond_fvu"]) else f"{a['cond_fvu']:.3f}"
+        _cell(fig, n, ncols, j + 1, 0, a["latent"], a["theta"],
+              f"atom {a['atom']} (rank {a['rank']}) latent — fires on {a['frac']*100:.0f}%", cmap=cm)
+        _cell(fig, n, ncols, j + 1, 1, a["recon"], a["theta"],
+              f"atom {a['atom']} recon on its region — conditional FVU {cond}", cmap=cm)
+    verdict = "clean tiling" if t["tiled"] and t["single"] >= 0.05 else (
+        "single-atom capture" if t["tiled"] else "redundant overlap (atoms sum, not tile)")
+    fig.suptitle(f"{nm}: {t['n_used']} atoms — {verdict}  "
+                 f"(single FVU {t['single']:.3f}, full FVU {t['full']:.3f})", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(path, dpi=120); plt.close(fig)
+
+
+def _triptych(tri, out_dir):
     """Per manifold (isolated samples): canonical -> best-atom chart -> best-atom recon ->
     FULL-model recon. Columns 3 vs 4 make splitting visible: if the manifold is split across
     atoms, the best single atom (col 3) covers only an arc while the full model (col 4) covers
-    it -- and col 4's title lists the participating atom indices."""
-    names = list(tri); n = len(names); ncols = 4
-    fig = plt.figure(figsize=(13, 3.1 * n))
-    for r, nm in enumerate(names):
-        t = tri[nm]
-        _cell(fig, n, ncols, r, 0, t["target"], t["theta"], f"{nm}  k{t['ki']} — canonical")
-        _cell(fig, n, ncols, r, 1, t["latent"], t["theta"], f"best atom {t['best']} chart (r{t['rank']})")
-        _cell(fig, n, ncols, r, 2, t["decoder"], t["theta"],
-              f"best-atom recon — single FVU {t['single']:.3f}")
-        _cell(fig, n, ncols, r, 3, t["full_recon"], t["theta"],
-              f"full model ({t['n_used']} atoms {t['used_ids']}) — full FVU {t['full']:.3f}")
-    fig.suptitle("Per-manifold (isolated): canonical -> best-atom chart -> best-atom recon -> "
-                 "FULL-model recon  (3D where dim>=3; colored by canonical angle)", fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.99])
-    fig.savefig(path, dpi=120); plt.close(fig)
+    it -- and col 4's title lists the participating atom indices.
+    ONE figure per manifold FAMILY (triptych_<family>.png); returns {family: filename}."""
+    fams = {}
+    for nm, t in tri.items():
+        fams.setdefault(t["type"], []).append(nm)
+    paths = {}
+    for fam, names in fams.items():
+        n = len(names); ncols = 4
+        fig = plt.figure(figsize=(13, 3.1 * n))
+        for r, nm in enumerate(names):
+            t = tri[nm]
+            _cell(fig, n, ncols, r, 0, t["target"], t["theta"],
+                  f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical")
+            _cell(fig, n, ncols, r, 1, t["latent"], t["theta"], f"best atom {t['best']} chart (r{t['rank']})")
+            _cell(fig, n, ncols, r, 2, t["decoder"], t["theta"],
+                  f"best-atom recon — single FVU {t['single']:.3f}")
+            _cell(fig, n, ncols, r, 3, t["full_recon"], t["theta"],
+                  f"full model ({t['n_used']} atoms {t['used_ids']}) — full FVU {t['full']:.3f}")
+        t0 = tri[names[0]]
+        fig.suptitle(f"{fam} ({t0['di']}D manifold in {t0['ki']}D subspace), isolated: canonical -> "
+                     "best-atom chart -> best-atom recon -> FULL-model recon (colored by canonical angle)",
+                     fontsize=12)
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        fname = f"triptych_{fam}.png"
+        fig.savefig(Path(out_dir) / fname, dpi=120); plt.close(fig)
+        paths[fam] = fname
+    return paths
 
 
 def _strip(rows, thresh, path):
@@ -199,14 +276,33 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
             ss = np.arange(n_iso) if n_iso <= cap else rng_i.choice(n_iso, cap, replace=False)
             on = gmask[best].nonzero(as_tuple=True)[0]         # the atom's ON dims (need not be contiguous)
             latent_dims = on if on.numel() else torch.zeros(1, dtype=torch.long, device=dev)
+            # per PARTICIPATING atom (the tiling view): its firing pattern on the ss subsample, plus
+            # its latent chart and canonical-coords recon restricted to its OWN firing samples.
+            atoms_viz = []
+            for a in part[:6].tolist():
+                on_a = gmask[a].nonzero(as_tuple=True)[0]
+                dims_a = on_a if on_a.numel() else torch.zeros(1, dtype=torch.long, device=dev)
+                fire = active_i[:, a].bool().cpu().numpy()
+                idx = np.where(fire)[0]
+                if len(idx) > cap:
+                    idx = np.sort(rng_i.choice(idx, cap, replace=False))
+                idx_t = torch.as_tensor(idx, device=dev)
+                atoms_viz.append(dict(
+                    atom=int(a), rank=int(round(float(atom_rank_vec[a]))),
+                    frac=float(firing_frac[a]), cond_fvu=_cond_fvu(int(a)),
+                    fire_ss=fire[ss],
+                    latent=z_i[idx_t][:, a][:, dims_a].cpu().numpy(),
+                    recon=(contrib[idx_t, a] @ Vi.t()).cpu().numpy(),
+                    theta=np.asarray(th_i)[idx, 0]))
             tri[inst.name] = dict(
                 target=(x_iso[ss] @ Vi.t()).cpu().numpy(),
                 latent=z_i[ss][:, best][:, latent_dims].cpu().numpy(),
                 decoder=(contrib[ss, best] @ Vi.t()).cpu().numpy(),
                 full_recon=(xh_i[ss] @ Vi.t()).cpu().numpy(),
-                theta=np.asarray(th_i)[ss, 0], rank=r, ki=int(inst.ki), best=best,
+                theta=np.asarray(th_i)[ss, 0], rank=r, ki=int(inst.ki), di=int(inst.di),
+                type=inst.type, best=best, tiled=tiled, frac_overlap=frac_overlap,
                 n_used=n_used, used_ids=str([a["atom"] for a in atoms[:4]]),
-                single=single, full=full)
+                single=single, full=full, atoms_viz=atoms_viz)
     # multi-threshold capture (the 0.05 cliff hides near-misses): single + tiled at thresh and 2*thresh,
     # recomputed from the stored per-instance fields. tiled at th = single<th OR (full<th AND disjoint).
     captures_by_thresh = {f"{th:.3f}": dict(
@@ -261,6 +357,59 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     return res, tri
 
 
+def _report_md(res, tri_paths, tiling_paths, out, thresh):
+    """report.md: the whole eval as ONE self-contained artifact -- headline metrics, the per-family
+    capture table, then a section per manifold family: per-instance verdict table, the family
+    triptych, and the per-atom tiling view of every multi-atom manifold in it."""
+    N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2*thresh:.3f}"]
+    L = [f"# Eval report — {out.name}\n",
+         f"presence `{res['presence']}` · n={res['eval_n']} (mixture) / {res['eval_n_iso']} (isolated)"
+         f" · capture threshold {thresh:g}\n",
+         "## Headline\n", "| metric | value |", "|---|---|"]
+    L += [f"| {k} | {v} |" for k, v in [
+        ("mixture FVU", f"{res['fvu']:.4f}"),
+        ("active rank-dof / sample", f"{res['act_rank']:.1f}"),
+        ("dead atoms", res["dead_atoms"]),
+        (f"captured single @{thresh:g}", f"{res['captured_single']}/{N}"),
+        (f"captured tiled @{thresh:g}", f"{res['captured_tiled']}/{N} "
+         f"(charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})"),
+        (f"captured full/union @{thresh:g}", f"{res['captured_full']}/{N}"),
+        (f"in-mixture (deployment) single @{thresh:g}", f"{res['inmix_captured_single']}/{N}"),
+        (f"single / tiled @{2*thresh:g}", f"{loose['single']}/{N} · {loose['tiled']}/{N}"),
+        ("mean single FVU", f"{res['mean_single_fvu']:.3f}")]]
+    L += ["\n## Capture by family\n",
+          "| family | single | tiled | charts | mean single FVU | mean full FVU | atoms/manifold | rank |",
+          "|---|---|---|---|---|---|---|---|"]
+    for t in sorted(res["per_family"]):
+        d = res["per_family"][t]
+        L.append(f"| {t} | {d['captured_single']}/{d['n']} | {d['captured_tiled']}/{d['n']} | "
+                 f"{d['tiled_charts_mean']:.1f} | {d['mean_single_fvu']:.3f} | {d['mean_full_fvu']:.3f} | "
+                 f"{d['atoms_per_manifold']:.1f} | {d['mean_rank']:.1f} |")
+    L.append("\n![per-instance FVU strip](fvu_strip.png)\n")
+    fam_rows = {}
+    for m in res["per_instance"]:
+        fam_rows.setdefault(m["type"], []).append(m)
+    for fam in sorted(fam_rows):
+        ms = fam_rows[fam]
+        L += [f"\n## {fam} — {ms[0]['di']}D manifold in {ms[0]['ki']}D subspace\n",
+              "| instance | single FVU (best atom) | full FVU | conditional FVU | overlap | verdict | atoms used |",
+              "|---|---|---|---|---|---|---|"]
+        for m in ms:
+            verdict = ("single" if m["single"] < thresh else
+                       f"tiled, {m['n_charts']} charts" if m["tiled_capture"] else
+                       "span/overlap (union fits, atoms sum)" if m["full"] < thresh else "missed")
+            atoms = " ".join(f"{a['atom']}(r{a['rank']},{a['frac']*100:.0f}%)" for a in m["atoms"][:4])
+            L.append(f"| {m['name']} | {m['single']:.3f} (atom {m['best_atom']}) | {m['full']:.3f} | "
+                     f"{m['cond_fvu']:.3f} | {m['frac_overlap']*100:.0f}% | {verdict} | {atoms} |")
+        if fam in tri_paths:
+            L.append(f"\n![{fam} triptych]({tri_paths[fam]})\n")
+        for m in ms:
+            if m["name"] in tiling_paths:
+                L.append(f"\n### {m['name']} — per-atom tiling view\n\n"
+                         f"![{m['name']} tiling]({tiling_paths[m['name']]})\n")
+    (out / "report.md").write_text("\n".join(L) + "\n")
+
+
 def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
                  thresh=0.05, cap=400, extra=None, l0=None):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
@@ -268,7 +417,13 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     res.update(extra or {})
     json.dump(res, open(out / "metrics.json", "w"), indent=1)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
-    _triptych(tri, out / "triptych.png")
+    tri_paths = _triptych(tri, out)
+    tiling_paths = {}
+    for nm, t in tri.items():
+        if len(t["atoms_viz"]) >= 2:                # the per-atom view only says something for >=2 atoms
+            _tiling_fig(nm, t, out / f"tiling_{nm}.png")
+            tiling_paths[nm] = f"tiling_{nm}.png"
+    _report_md(res, tri_paths, tiling_paths, out, thresh)
     N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2 * thresh:.3f}"]
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} dead={res['dead_atoms']}\n"
@@ -301,7 +456,8 @@ def load_checkpoint(ckpt_path, device="cpu"):
     ck = torch.load(ckpt_path, map_location=device)
     d_model = int(ck["state_dict"]["enc1.weight"].shape[2])
     m = ManifoldSAE(d_model=d_model, rank_dist=ck["pool"], enc_dims=ck["enc_dims"],
-                    jump_eps=ck["jump_eps"], learn_rank=ck["learn_rank"]).to(device)
+                    jump_eps=ck["jump_eps"], learn_rank=ck["learn_rank"],
+                    gate_grad=ck.get("gate_grad", "rect")).to(device)
     m.load_state_dict(ck["state_dict"]); m.eval()
     zoo = ManifoldZoo(d=d_model, seed=0, variants_per_type=ck["variants_per_type"])
     return m, zoo, ck["scale"], ck.get("l0", None), ck
