@@ -420,6 +420,7 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         return float(np.mean(c)) if c else 0.0
     per_family = {t: dict(
         n=len(rs), captured_single=sum(r["single"] < thresh for r in rs),
+        captured_at_di=sum(r["single"] < thresh and r["best_rank"] == r["di"] for r in rs),
         captured_tiled=sum(r["tiled_capture"] for r in rs),
         tiled_charts_mean=_charts_mean(rs),
         mean_single_fvu=float(np.mean([r["single"] for r in rs])),
@@ -432,6 +433,11 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                active_count_mean=float(act_count.mean()), active_count_std=float(act_count.std()),
                dead_atoms=int((firing_frac_mix < 1e-3).sum()),   # firing-fraction floor (strict ==0 was n/seed-unstable)
                captured_single=sum(m["single"] < thresh for m in rows),
+               # WINDING criterion: captured AND the dedicating atom's effective rank equals the
+               # manifold's INTRINSIC dim di (a wound chart, not a flat one at the embedding dim).
+               # captured_at_ki = the flat/subspace-capture counterpart (rank == embedding dim).
+               captured_at_di=sum(m["single"] < thresh and m["best_rank"] == m["di"] for m in rows),
+               captured_at_ki=sum(m["single"] < thresh and m["best_rank"] == m["ki"] for m in rows),
                captured_tiled=sum(m["tiled_capture"] for m in rows),
                captured_full=sum(m["full"] < thresh for m in rows),   # union, kept as a secondary diagnostic
                tiled_charts_mean=(float(np.mean([m["n_charts"] for m in rows if m["tiled_capture"]]))
@@ -515,6 +521,8 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
         ("atoms firing / sample", f"{res['atoms_per_sample_mean']:.1f}"),
         ("dead atoms", res["dead_atoms"]),
         (f"captured single @{thresh:g}", f"{res['captured_single']}/{N}"),
+        (f"captured at INTRINSIC dim (wound chart) @{thresh:g}",
+         f"{res['captured_at_di']}/{N} (at embedding dim ki: {res['captured_at_ki']})"),
         (f"captured tiled @{thresh:g}", f"{res['captured_tiled']}/{N} "
          f"(charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})"),
         (f"captured full/union @{thresh:g}", f"{res['captured_full']}/{N}"),
@@ -522,11 +530,12 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
         (f"single / tiled @{2*thresh:g}", f"{loose['single']}/{N} · {loose['tiled']}/{N}"),
         ("mean single FVU", f"{res['mean_single_fvu']:.3f}")]]
     L += ["\n## Capture by family\n",
-          "| family | single | tiled | charts | mean single FVU | mean full FVU | atoms/manifold | rank |",
-          "|---|---|---|---|---|---|---|---|"]
+          "| family | single | at-di | tiled | charts | mean single FVU | mean full FVU | atoms/manifold | rank |",
+          "|---|---|---|---|---|---|---|---|---|"]
     for t in sorted(res["per_family"]):
         d = res["per_family"][t]
-        L.append(f"| {t} | {d['captured_single']}/{d['n']} | {d['captured_tiled']}/{d['n']} | "
+        L.append(f"| {t} | {d['captured_single']}/{d['n']} | {d['captured_at_di']}/{d['n']} | "
+                 f"{d['captured_tiled']}/{d['n']} | "
                  f"{d['tiled_charts_mean']:.1f} | {d['mean_single_fvu']:.3f} | {d['mean_full_fvu']:.3f} | "
                  f"{d['atoms_per_manifold']:.1f} | {d['mean_rank']:.1f} |")
     L.append("\n![per-family rank vs FVU, cutoff-free](rank_vs_fvu.png)\n")
@@ -583,7 +592,8 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2 * thresh:.3f}"]
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} dead={res['dead_atoms']}\n"
-          f"  CAPTURE (isolated @{thresh:g}): single={res['captured_single']}/{N}  "
+          f"  CAPTURE (isolated @{thresh:g}): single={res['captured_single']}/{N} "
+          f"(at-di={res['captured_at_di']} at-ki={res['captured_at_ki']})  "
           f"tiled={res['captured_tiled']}/{N} (charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})  "
           f"[full(union)={res['captured_full']}/{N}]\n"
           f"  @{2*thresh:g}: single={loose['single']}/{N} tiled={loose['tiled']}/{N}   "
