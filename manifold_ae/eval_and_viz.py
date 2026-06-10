@@ -45,6 +45,16 @@ def _cell(fig, n, ncols, r, c, arr, color, title, cmap="hsv", vmin=None, vmax=No
     return ax
 
 
+_CYCLIC_THETA0 = {"circle", "torus", "mobius"}      # families whose coordinate 0 wraps around
+
+def _theta_cmap(typ):
+    """Colormap for the canonical-coordinate gradient. Cyclic hsv ONLY where coordinate 0
+    actually wraps (the seam is real); otherwise a NON-cyclic rainbow (turbo), so the two ends
+    of an open manifold don't both map to red — 'red here = red there' stays injective across
+    every panel that uses the gradient."""
+    return "hsv" if typ in _CYCLIC_THETA0 else "turbo"
+
+
 def _atom_cmap(j):
     """Light->dark colormap of ONE base color (tab10 cycle): the hue identifies the atom,
     the intensity tracks the canonical coordinate -- so cross-referencing a latent panel with
@@ -145,13 +155,15 @@ def _triptych(tri, out_dir):
         fig = plt.figure(figsize=(13, 3.1 * n))
         for r, nm in enumerate(names):
             t = tri[nm]
+            cm = _theta_cmap(t["type"])
             _cell(fig, n, ncols, r, 0, t["target"], t["theta"],
-                  f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical")
-            _cell(fig, n, ncols, r, 1, t["latent"], t["theta"], f"best atom {t['best']} chart (r{t['rank']})")
+                  f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical", cmap=cm)
+            _cell(fig, n, ncols, r, 1, t["latent"], t["theta"],
+                  f"best atom {t['best']} chart (r{t['rank']})", cmap=cm)
             _cell(fig, n, ncols, r, 2, t["decoder"], t["theta"],
-                  f"best-atom recon — single FVU {t['single']:.3f}")
+                  f"best-atom recon — single FVU {t['single']:.3f}", cmap=cm)
             _cell(fig, n, ncols, r, 3, t["full_recon"], t["theta"],
-                  f"full model ({t['n_used']} atoms {t['used_ids']}) — full FVU {t['full']:.3f}")
+                  f"full model ({t['n_used']} atoms {t['used_ids']}) — full FVU {t['full']:.3f}", cmap=cm)
         t0 = tri[names[0]]
         fig.suptitle(f"{fam} ({t0['di']}D manifold in {t0['ki']}D subspace), isolated: canonical -> "
                      "best-atom chart -> best-atom recon -> FULL-model recon (colored by canonical angle)",
