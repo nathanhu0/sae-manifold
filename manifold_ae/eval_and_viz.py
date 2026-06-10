@@ -75,6 +75,38 @@ def _strip(rows, thresh, path):
     fig.tight_layout(); fig.savefig(path, dpi=140); plt.close(fig)
 
 
+def _inmixture_capture(model, zoo, scale, dev, l0, p_active, thresh, n=4000):
+    """In-mixture (DEPLOYMENT) single-atom capture. Isolated `single` feeds one manifold at a time
+    (mildly OOD); this samples REAL L0-mixtures with ground-truth per-manifold contributions and asks,
+    for each instance, the best atom's AGGREGATE FVU reconstructing THAT manifold's truth over the
+    samples where it is present. Deployment analog of isolated single (a bit more pessimistic via
+    cross-talk). Returns (captured_count, mean_inmix_fvu, per_type_captured)."""
+    rng = np.random.default_rng(321)
+    x, masks, truth = zoo.sample(n, l0, rng, p_active=(None if l0 is not None else p_active),
+                                 return_truth=True)                     # truth (n, n_inst, d), only-active rows set
+    xt = torch.tensor(x, device=dev) / scale
+    truth_t = torch.tensor(truth, device=dev) / scale
+    masks_t = torch.tensor(masks, device=dev)
+    with torch.no_grad():
+        _, _, _, active, dec, _ = model.forward_jump(xt)                # active (n,N), dec (n,N,d)
+    per_type = {}
+    fvus = []
+    for i, inst in enumerate(zoo.instances):
+        sel = masks_t[:, i].bool()
+        if int(sel.sum()) < 5:
+            continue
+        ti = truth_t[sel, i]                                            # (n_sel, d) ground-truth contribution
+        csel = active[sel].unsqueeze(-1) * dec[sel]                     # (n_sel, N, d) each atom's mixture output
+        den = (ti ** 2).sum().clamp_min(1e-9)
+        fa = ((csel - ti.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / den      # (N,) per-atom in-mixture aggregate FVU
+        s = float(fa.min())
+        fvus.append(s)
+        per_type.setdefault(inst.type, []).append(s)
+    captured = sum(s < thresh for s in fvus)
+    per_type_cap = {t: sum(s < thresh for s in ss) for t, ss in per_type.items()}
+    return captured, (float(np.mean(fvus)) if fvus else float("nan")), per_type_cap
+
+
 def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh=0.05,
                     cap=400, want_tri=True, l0=None):
     """Compute metrics (no file writes). Returns (res, tri).
@@ -175,6 +207,19 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                 theta=np.asarray(th_i)[ss, 0], rank=r, ki=int(inst.ki), best=best,
                 n_used=n_used, used_ids=str([a["atom"] for a in atoms[:4]]),
                 single=single, full=full)
+    # multi-threshold capture (the 0.05 cliff hides near-misses): single + tiled at thresh and 2*thresh,
+    # recomputed from the stored per-instance fields. tiled at th = single<th OR (full<th AND disjoint).
+    captures_by_thresh = {f"{th:.3f}": dict(
+        single=sum(m["single"] < th for m in rows),
+        tiled=sum(m["single"] < th or (m["full"] < th and m["frac_overlap"] < overlap_tol) for m in rows))
+        for th in (thresh, 2 * thresh)}
+    # in-mixture (deployment) single-atom capture vs ground-truth contributions -- only for the full eval
+    # (want_tri), not the cheap periodic one. Mildly more pessimistic than isolated (cross-talk).
+    if want_tri:
+        inmix_captured, inmix_mean_fvu, inmix_per_type = _inmixture_capture(
+            model, zoo, scale, dev, l0_presence, p_active, thresh)
+    else:
+        inmix_captured, inmix_mean_fvu, inmix_per_type = None, None, None
     # per-family CONTINUOUS aggregates (not just the discrete <thresh count): mean single/full FVU
     # (catches near-misses -- "captured but off by a little"), mean atoms/manifold (= per-manifold L0,
     # the spanning amount), mean dedicating-atom rank. Grouped by manifold type.
@@ -205,6 +250,9 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                                   for k in sorted({m["n_charts"] for m in rows if m["tiled_capture"]})},
                mean_single_fvu=float(np.mean([m["single"] for m in rows])),
                mean_cond_fvu=float(np.nanmean([m["cond_fvu"] for m in rows])),
+               captures_by_thresh=captures_by_thresh,
+               inmix_captured_single=inmix_captured, inmix_mean_fvu=inmix_mean_fvu,
+               inmix_per_type=inmix_per_type,
                eval_mode="isolated",
                eval_n=int(n), eval_n_iso=int(n_iso), thresh=float(thresh), eval_cap=int(cap),
                presence=(f"constant_l0={l0_presence}" if l0_presence is not None
@@ -221,11 +269,15 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     json.dump(res, open(out / "metrics.json", "w"), indent=1)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
     _triptych(tri, out / "triptych.png")
+    N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2 * thresh:.3f}"]
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} dead={res['dead_atoms']}\n"
-          f"  CAPTURE (isolated): single={res['captured_single']}/{res['n_inst']}  "
-          f"tiled={res['captured_tiled']}/{res['n_inst']} (charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})  "
-          f"[full(union)={res['captured_full']}/{res['n_inst']}]  mean_single_FVU={res['mean_single_fvu']:.3f}", flush=True)
+          f"  CAPTURE (isolated @{thresh:g}): single={res['captured_single']}/{N}  "
+          f"tiled={res['captured_tiled']}/{N} (charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})  "
+          f"[full(union)={res['captured_full']}/{N}]\n"
+          f"  @{2*thresh:g}: single={loose['single']}/{N} tiled={loose['tiled']}/{N}   "
+          f"in-mixture(deployment): single={res['inmix_captured_single']}/{N}   "
+          f"mean_single_FVU={res['mean_single_fvu']:.3f}", flush=True)
     # per-family: the TWO standard metrics (single, tiled) + charts needed for the tiling, mean FVUs, rank
     print("  [per-family] type        single  tiled  charts  mean_single  mean_full  rank", flush=True)
     for t in sorted(res["per_family"]):
@@ -239,3 +291,32 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
         print(f"   {m['name']:13s} k{m['ki']}  single={m['single']:.3f}(atom {m['best_atom']}) "
               f"full={m['full']:.3f}  uses {m['n_atoms_used']} atoms: {ids}", flush=True)
     return res
+
+
+def load_checkpoint(ckpt_path, device="cpu"):
+    """Canonical loader: rebuild (model, zoo, scale, l0, ck) from a saved ckpt.pt. d_model is read back
+    from the encoder weight so it is not hard-coded. Used by the CLI, reeval_campaign, and smoke tests."""
+    from manifold_ae.manifold_zoo import ManifoldZoo
+    from manifold_ae.manifold_sae import ManifoldSAE
+    ck = torch.load(ckpt_path, map_location=device)
+    d_model = int(ck["state_dict"]["enc1.weight"].shape[2])
+    m = ManifoldSAE(d_model=d_model, rank_dist=ck["pool"], enc_dims=ck["enc_dims"],
+                    jump_eps=ck["jump_eps"], learn_rank=ck["learn_rank"]).to(device)
+    m.load_state_dict(ck["state_dict"]); m.eval()
+    zoo = ManifoldZoo(d=d_model, seed=0, variants_per_type=ck["variants_per_type"])
+    return m, zoo, ck["scale"], ck.get("l0", None), ck
+
+
+if __name__ == "__main__":
+    # Canonical single-checkpoint eval: `python -m manifold_ae.eval_and_viz <ckpt.pt|run_dir>`
+    # -> writes metrics.json + fvu_strip.png + triptych.png into the run dir and prints the full suite.
+    import argparse
+    ap = argparse.ArgumentParser(description="Evaluate a manifold-SAE checkpoint (full capture suite).")
+    ap.add_argument("ckpt", help="path to ckpt.pt, or a run dir containing ckpt.pt")
+    ap.add_argument("--out-dir", default=None, help="output dir (default: the ckpt's own dir)")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    a = ap.parse_args()
+    cpath = Path(a.ckpt); cpath = cpath / "ckpt.pt" if cpath.is_dir() else cpath
+    model, zoo, scale, l0, ck = load_checkpoint(cpath, a.device)
+    eval_and_viz(model, zoo, scale, a.out_dir or cpath.parent,
+                 p_active=(None if l0 is not None else ck.get("p_active", 0.25)), l0=l0)
