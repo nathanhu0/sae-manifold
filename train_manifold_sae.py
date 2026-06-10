@@ -72,6 +72,8 @@ def main():
     ap.add_argument("--l0-rank-floor", action="store_true")        # charge >=1 per FIRING atom (rank-0 atoms cost 0 otherwise -> free always-on bias atoms)
     ap.add_argument("--gate-grad", choices=["rect", "sigmoid"], default="rect")  # gate backward: rect STE vs sigmoid' surrogate (both gate levels)
     ap.add_argument("--seed", type=int, default=0)                 # init + batch-order seed; zoo GEOMETRY stays seed=0
+    ap.add_argument("--sigma-eps", type=float, default=1e-5)       # ambient Gaussian noise in TRAINING mixtures (eval stays clean)
+    ap.add_argument("--lam-latent-moment", type=float, default=0.0)  # push each USED latent dim to zero-mean/unit-var over its firing samples
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
@@ -86,7 +88,7 @@ def main():
     rng = np.random.default_rng(a.seed + 1)
 
     def batch():
-        x, _ = zoo.sample(BATCH, samp_l0, rng, p_active=pa)
+        x, _ = zoo.sample(BATCH, samp_l0, rng, sigma_eps=a.sigma_eps, p_active=pa)
         return torch.tensor(x, device=DEV) / scale
 
     m = ManifoldSAE(d_model=D, rank_dist=pool, enc_dims=enc_dims,
@@ -142,6 +144,17 @@ def main():
             # indifferent to consolidation (1 rank-4 atom == 4 rank-1 atoms), so this fixed cost
             # per active atom breaks the tie toward ONE higher-dim atom vs a spanning split. Ramped like lam.
             loss = loss + a.lam_atom * min(1.0, step / lam_warmup) * active.sum(-1).float().mean()
+        if a.lam_latent_moment > 0:
+            # latent shaping: each USED latent dim should be zero-mean/unit-variance over the
+            # samples its atom fires on (firing-weighted batch moments). First-two-moments
+            # standardization only -- NOT full Gaussianity; a cheap prior toward comparable,
+            # centered charts. Masked to on-dims (detached gate) and atoms with enough firing.
+            w = (active / active.sum(0).clamp(min=1.0)).unsqueeze(-1)      # (B,N,1) per-atom weights
+            mu = (w * z).sum(0)                                            # (N,K) firing-weighted mean
+            var = (w * (z - mu) ** 2).sum(0)                               # (N,K) firing-weighted var
+            mmask = m.rank_gate().detach() * (active.sum(0) > 8).float().unsqueeze(-1)
+            mom = ((mu ** 2 + (var - 1.0) ** 2) * mmask).sum() / mmask.sum().clamp(min=1.0)
+            loss = loss + a.lam_latent_moment * mom
         if a.learn_rank and a.lam_preact_dim > 0:
             # per-dim reactivating loss: constant upward push on pruned dim-biases (bias<0) so a dim driven
             # below the STE window stays revivable instead of freezing off forever. Analog of the
@@ -184,7 +197,8 @@ def main():
                 "variants_per_type": a.variants_per_type, "p_active": a.p_active,
                 "l0": a.l0, "lam_atom": a.lam_atom,
                 "l0_rank_floor": a.l0_rank_floor, "gate_grad": a.gate_grad,
-                "seed": a.seed}, out / "ckpt.pt")
+                "seed": a.seed, "sigma_eps": a.sigma_eps,
+                "lam_latent_moment": a.lam_latent_moment}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
     eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,
@@ -193,7 +207,8 @@ def main():
                         "lam_decorr": a.lam_decorr, "learn_rank": a.learn_rank,
                         "lam_preact_dim": a.lam_preact_dim, "l0": a.l0,
                         "lam_atom": a.lam_atom, "gate_grad": a.gate_grad,
-                        "seed": a.seed, "progress": progress})
+                        "seed": a.seed, "sigma_eps": a.sigma_eps,
+                        "lam_latent_moment": a.lam_latent_moment, "progress": progress})
 
 
 if __name__ == "__main__":
