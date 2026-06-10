@@ -104,13 +104,14 @@ def _tiling_fig(nm, t, path):
     fig = plt.figure(figsize=(11, 3.4 * n))
     owner, recon, cov = t["atlas_owner"], t["atlas_recon"], t["atlas_owner"] >= 0
     vmn, vmx = float(t["theta"].min()), float(t["theta"].max())   # GLOBAL gradient range
+    cm = _theta_cmap(t["type"])
     ax = _cell(fig, n, ncols, 0, 0, t["target"], t["theta"],
                f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical",
-               vmin=vmn, vmax=vmx)
+               cmap=cm, vmin=vmn, vmax=vmx)
     _apply_lims(ax, t["target"], dim)
     ax = _cell(fig, n, ncols, 0, 1, recon[cov], t["theta"][cov],
                "atlas recon — best firing atom per point, one at a time",
-               vmin=vmn, vmax=vmx)
+               cmap=cm, vmin=vmn, vmax=vmx)
     _apply_lims(ax, t["target"], dim)
     ax = fig.add_subplot(n, ncols, 3, projection="3d" if dim >= 3 else None)
     _scatter_sel(ax, t["target"], ~cov, dim, c="0.85")
@@ -128,7 +129,7 @@ def _tiling_fig(nm, t, path):
         cond = "n/a" if np.isnan(a["cond_fvu"]) else f"{a['cond_fvu']:.3f}"
         ax = _cell(fig, n, ncols, 1 + j // ncols, j % ncols, a["latent"], a["theta"],
                    f"atom {a['atom']} (rank {a['rank']}) latent — fires on {a['frac']*100:.0f}%, "
-                   f"cond FVU {cond}", vmin=vmn, vmax=vmx)
+                   f"cond FVU {cond}", cmap=cm, vmin=vmn, vmax=vmx)
         if a["latent"].shape[1] < 3:                  # frame the panel in the atom's hue (2D axes only)
             for spine in ax.spines.values():
                 spine.set_edgecolor(_atom_cmap(j)(1.0)); spine.set_linewidth(2.5)
