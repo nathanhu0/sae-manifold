@@ -96,6 +96,7 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     act_count = masks.sum(1)
     gmask = model.rank_gate().detach()                     # (N, max_rank) {0,1} on-dim mask (learned or fixed)
     atom_rank_vec = gmask.sum(-1).cpu()                    # per-atom rank = on-dim count (NEVER max_rank)
+    overlap_tol = 0.05                                     # tiled = charts fire one-at-a-time: allow <=5% co-fire
     rows, tri = [], {}
     for idx, inst in enumerate(zoo.instances):
         rng_i = np.random.default_rng(10_000 + idx)            # per-instance rng: isolated FVUs + best_atom are
@@ -132,20 +133,34 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                 num = ((contrib[fire, a] - x_iso[fire]) ** 2).sum()
                 den = (x_iso[fire] ** 2).sum().clamp_min(1e-9)
                 return float(num / den)
-            cond_best = _cond_fvu(best)                        # best-atom quality on its OWN firing region
+            cond_best = _cond_fvu(best)                        # best-atom quality on its OWN firing region (diag)
             ff_best = float(firing_frac[best])
+            # ONE-CHART-AT-A-TIME: a true spatial TILING covers the manifold with charts that fire DISJOINTLY,
+            # so each sample is reconstructed by a SINGLE chart. >=2 atoms firing on the same sample = redundant
+            # OVERLAP (the atoms ADD, not tile). frac_overlap = fraction of the manifold's samples with >=2 active.
+            kcount = active_i.sum(1)                            # (n,) atoms firing per sample
+            frac_overlap = float((kcount >= 2).float().mean())
+            frac_uncovered = float((kcount == 0).float().mean())
+            mean_cofire = float(kcount.float().mean())
             part = (firing_frac > 0.05).nonzero(as_tuple=True)[0]
             part = part[firing_frac[part].argsort(descending=True)]
             atoms = [dict(atom=int(i), rank=int(round(float(atom_rank_vec[i]))), frac=float(firing_frac[i]),
                           fvu=float(fa[i]), cond_fvu=_cond_fvu(int(i))) for i in part[:8]]
             n_used = int(len(part))
-            # captured-as-clean-tiling: a single atom spans it, OR the union reconstructs it AND its dominant
-            # atom is a clean local chart (rules out the redundant-overlap broken split, which has cond_best high).
+            # TILED CAPTURE = captured by a clean one-chart-at-a-time atlas: ONE atom spans the whole manifold
+            # (single), OR the union reconstructs it (full<thresh) with charts that fire DISJOINTLY
+            # (frac_overlap < tol). Disjoint + full<thresh => the union is a concatenation of single-chart
+            # reconstructions, each good on its own region. (segment_0: 2 half-charts, overlap ~0 -> tiled;
+            # flat_disk_1: 2 atoms both firing ~80% -> overlap high -> NOT tiled, they sum rather than tile.)
             tiled = bool(single < thresh
-                         or (full < thresh and not np.isnan(cond_best) and cond_best < thresh))
+                         or (full < thresh and frac_overlap < overlap_tol))
+            # charts NEEDED for the tiling: 1 if a single atom spans the whole manifold, else the number of
+            # disjoint participating charts (n_used). Only meaningful when tiled; reported in the tiled aggregate.
+            n_charts = 1 if single < thresh else n_used
         rows.append(dict(name=inst.name, type=inst.type, ki=int(inst.ki), di=int(inst.di),
                          best_rank=r, best_atom=best, single=single, full=full, cond_fvu=cond_best,
-                         best_firing_frac=ff_best, tiled_capture=tiled,
+                         best_firing_frac=ff_best, frac_overlap=frac_overlap, frac_uncovered=frac_uncovered,
+                         mean_cofire=mean_cofire, tiled_capture=tiled, n_charts=n_charts,
                          n_atoms_used=n_used, atoms=atoms))
         if want_tri:
             Vi = torch.tensor(inst.V, device=dev)
@@ -166,9 +181,13 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     fam = {}
     for r in rows:
         fam.setdefault(r["type"], []).append(r)
+    def _charts_mean(rs):
+        c = [r["n_charts"] for r in rs if r["tiled_capture"]]
+        return float(np.mean(c)) if c else 0.0
     per_family = {t: dict(
         n=len(rs), captured_single=sum(r["single"] < thresh for r in rs),
         captured_tiled=sum(r["tiled_capture"] for r in rs),
+        tiled_charts_mean=_charts_mean(rs),
         mean_single_fvu=float(np.mean([r["single"] for r in rs])),
         mean_full_fvu=float(np.mean([r["full"] for r in rs])),
         mean_cond_fvu=float(np.nanmean([r["cond_fvu"] for r in rs])),
@@ -178,8 +197,12 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                active_count_mean=float(act_count.mean()), active_count_std=float(act_count.std()),
                dead_atoms=int((firing_frac_mix < 1e-3).sum()),   # firing-fraction floor (strict ==0 was n/seed-unstable)
                captured_single=sum(m["single"] < thresh for m in rows),
-               captured_full=sum(m["full"] < thresh for m in rows),
                captured_tiled=sum(m["tiled_capture"] for m in rows),
+               captured_full=sum(m["full"] < thresh for m in rows),   # union, kept as a secondary diagnostic
+               tiled_charts_mean=(float(np.mean([m["n_charts"] for m in rows if m["tiled_capture"]]))
+                                  if any(m["tiled_capture"] for m in rows) else 0.0),
+               tiled_charts_hist={int(k): sum(m["n_charts"] == k for m in rows if m["tiled_capture"])
+                                  for k in sorted({m["n_charts"] for m in rows if m["tiled_capture"]})},
                mean_single_fvu=float(np.mean([m["single"] for m in rows])),
                mean_cond_fvu=float(np.nanmean([m["cond_fvu"] for m in rows])),
                eval_mode="isolated",
@@ -199,17 +222,17 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
     _triptych(tri, out / "triptych.png")
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
-          f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} "
-          f"dead={res['dead_atoms']}  captured(isolated) single={res['captured_single']}/{res['n_inst']} "
-          f"tiled={res['captured_tiled']}/{res['n_inst']} full={res['captured_full']}/{res['n_inst']}  "
-          f"mean_single_FVU={res['mean_single_fvu']:.3f} mean_cond_FVU={res['mean_cond_fvu']:.3f}", flush=True)
-    # per-family CONTINUOUS view: single (strict) + tiled (clean charts) caps, mean single/cond/full FVU, spanning, rank
-    print("  [per-family] type        single tiled  mean_single  mean_cond  mean_full  atoms/mfld  rank", flush=True)
+          f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} dead={res['dead_atoms']}\n"
+          f"  CAPTURE (isolated): single={res['captured_single']}/{res['n_inst']}  "
+          f"tiled={res['captured_tiled']}/{res['n_inst']} (charts ~{res['tiled_charts_mean']:.1f}, hist {res['tiled_charts_hist']})  "
+          f"[full(union)={res['captured_full']}/{res['n_inst']}]  mean_single_FVU={res['mean_single_fvu']:.3f}", flush=True)
+    # per-family: the TWO standard metrics (single, tiled) + charts needed for the tiling, mean FVUs, rank
+    print("  [per-family] type        single  tiled  charts  mean_single  mean_full  rank", flush=True)
     for t in sorted(res["per_family"]):
         d = res["per_family"][t]
-        print(f"   {t:13s} {d['captured_single']}/{d['n']}   {d['captured_tiled']}/{d['n']}   "
-              f"{d['mean_single_fvu']:.3f}       {d['mean_cond_fvu']:.3f}      {d['mean_full_fvu']:.3f}      "
-              f"{d['atoms_per_manifold']:.1f}        {d['mean_rank']:.1f}", flush=True)
+        print(f"   {t:13s} {d['captured_single']}/{d['n']}    {d['captured_tiled']}/{d['n']}    "
+              f"{d['tiled_charts_mean']:.1f}     {d['mean_single_fvu']:.3f}      {d['mean_full_fvu']:.3f}     "
+              f"{d['mean_rank']:.1f}", flush=True)
     # per-manifold: which atoms carry it (best single vs the full participating set) -> splitting
     for m in sorted(res["per_instance"], key=lambda r: -r["full"]):
         ids = " ".join(f"{a['atom']}(r{a['rank']},{a['frac']*100:.0f}%)" for a in m["atoms"])
