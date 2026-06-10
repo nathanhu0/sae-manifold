@@ -3,6 +3,18 @@
 Use these terms in code, reports, plots, and discussion. Where an older synonym exists it is
 listed as DEPRECATED — don't introduce it in new writing.
 
+## The two modes (one method, one dial)
+
+The gating machinery — binary presence gate + learned per-dim rank masking under the
+rank-weighted L0 — IS the method. The encoder/decoder nonlinearity selects the deliverable:
+
+- **subspace-capture mode** (`--enc-dims linear`) — fully linear atoms; the only learned
+  nonlinearity is the gating. Finds WHICH low-dim subspaces carry the data and how many
+  dimensions each needs (emergent rank). Scored by capture and **captured-at-ki**.
+- **winding mode** (nonlinear funnel / winding stack) — atoms additionally parameterize each
+  manifold in intrinsic coordinates: canonical readable latents, support, generation. Scored by
+  **captured-at-di** (capture with effective rank == intrinsic dim).
+
 ## Model
 
 - **manifold atom** (or just **atom**) — one dictionary element: a per-atom deep encoder →
