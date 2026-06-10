@@ -570,6 +570,15 @@ def render_figures(res, tri, out, thresh=0.05):
     from compute_capture or from the cached viz_arrays.npy, so figure iteration is a local CPU
     operation (eval CLI: --figures-only)."""
     out = Path(out)
+    if "captured_at_di" not in res:      # retrofit metrics.json written before the winding metric
+        th = res.get("thresh", thresh)
+        res["captured_at_di"] = sum(m["single"] < th and m["best_rank"] == m["di"]
+                                    for m in res["per_instance"])
+        res["captured_at_ki"] = sum(m["single"] < th and m["best_rank"] == m["ki"]
+                                    for m in res["per_instance"])
+        for t, d in res["per_family"].items():
+            d["captured_at_di"] = sum(m["single"] < th and m["best_rank"] == m["di"]
+                                      for m in res["per_instance"] if m["type"] == t)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
     _rank_fvu_fig(res, out / "rank_vs_fvu.png", thresh)
     tri_paths = _overview_grid(tri, out)
