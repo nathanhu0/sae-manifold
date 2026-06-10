@@ -26,17 +26,20 @@ import numpy as np
 import torch
 
 
-def _cell(fig, n, ncols, r, c, arr, color, title, cmap="hsv"):
-    """One panel. 3D scatter when the data has >=3 dims, else 2D / 1D."""
+def _cell(fig, n, ncols, r, c, arr, color, title, cmap="hsv", vmin=None, vmax=None):
+    """One panel. 3D scatter when the data has >=3 dims, else 2D / 1D. Pass vmin/vmax to pin
+    the color gradient to a GLOBAL coordinate range (panels showing subsets of a manifold must
+    not re-stretch their own slice of theta to the full colormap)."""
     dim = arr.shape[1]
     ax = fig.add_subplot(n, ncols, r * ncols + c + 1, projection="3d" if dim >= 3 else None)
     if dim >= 3:
         ax.scatter(arr[:, 0], arr[:, 1], arr[:, 2], c=color, cmap=cmap, s=6,
-                   alpha=0.7, linewidths=0)
+                   alpha=0.7, linewidths=0, vmin=vmin, vmax=vmax)
         ax.set_zticks([])
     else:
         ys = arr[:, 1] if dim >= 2 else np.zeros_like(arr[:, 0])
-        ax.scatter(arr[:, 0], ys, c=color, cmap=cmap, s=8, alpha=0.75, linewidths=0)
+        ax.scatter(arr[:, 0], ys, c=color, cmap=cmap, s=8, alpha=0.75, linewidths=0,
+                   vmin=vmin, vmax=vmax)
     ax.set_xticks([]); ax.set_yticks([])
     ax.set_title(title, fontsize=8)
     return ax
@@ -64,41 +67,66 @@ def _scatter_sel(ax, arr, sel, dim, **kw):
         ax.scatter(arr[sel, 0], ys, s=8, linewidths=0, **kw)
 
 
+def _apply_lims(ax, arr, dim):
+    """Pin a panel to the data range of arr (pad 5%) so panels in the same coordinate
+    frame compose visually."""
+    lo, hi = arr.min(0), arr.max(0)
+    pad = 0.05 * (hi - lo) + 1e-6
+    ax.set_xlim(lo[0] - pad[0], hi[0] + pad[0])
+    if dim >= 2:
+        ax.set_ylim(lo[1] - pad[1], hi[1] + pad[1])
+    if dim >= 3:
+        ax.set_zlim3d(lo[2] - pad[2], hi[2] + pad[2])
+
+
 def _tiling_fig(nm, t, path):
-    """Per-atom view of a multi-atom manifold. Top row: canonical target colored by the canonical
-    coordinate, then by OWNING atom (gray = no atom fires, black = >=2 fire at once). Below, one row
-    per participating atom: its latent chart and its reconstruction on its own firing region, in the
-    atom's color with intensity = canonical coordinate. A clean tiling reads as complementary
-    solid-color chunks; redundant overlap reads as black in the owner panel."""
+    """One-chart-at-a-time atlas view of a multi-atom manifold. Top row, all in the SAME
+    canonical V_i coordinates and axis limits: TARGET | ATLAS RECON (each point = its best
+    FIRING atom's output ALONE, never the sum), both colored by the canonical-coordinate
+    gradient | the same atlas recon colored by OWNING atom (hue = atom, intensity = canonical
+    coordinate; gray = target points no participating atom covers). Below: each participating
+    atom's latent chart in the same canonical gradient, so latent <-> manifold-position
+    correspondence reads directly across every panel."""
     av = t["atoms_viz"]
-    n = 1 + len(av); ncols = 2; dim = t["target"].shape[1]
-    fig = plt.figure(figsize=(8, 3.1 * n))
-    _cell(fig, n, ncols, 0, 0, t["target"], t["theta"],
-          f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical")
-    ax = fig.add_subplot(n, ncols, 2, projection="3d" if dim >= 3 else None)
-    cover = np.sum([a["fire_ss"] for a in av], axis=0)
-    _scatter_sel(ax, t["target"], cover == 0, dim, c="0.85")
-    for j, a in enumerate(av):
-        sel = a["fire_ss"] & (cover == 1)
-        _scatter_sel(ax, t["target"], sel, dim, c=t["theta"][sel], cmap=_atom_cmap(j), alpha=0.85)
-    _scatter_sel(ax, t["target"], cover >= 2, dim, c="k", alpha=0.5)
+    ncols = 3
+    n = 1 + (len(av) + ncols - 1) // ncols
+    dim = t["target"].shape[1]
+    fig = plt.figure(figsize=(11, 3.4 * n))
+    owner, recon, cov = t["atlas_owner"], t["atlas_recon"], t["atlas_owner"] >= 0
+    vmn, vmx = float(t["theta"].min()), float(t["theta"].max())   # GLOBAL gradient range
+    ax = _cell(fig, n, ncols, 0, 0, t["target"], t["theta"],
+               f"{nm} — {t['di']}D manifold in {t['ki']}D subspace — canonical",
+               vmin=vmn, vmax=vmx)
+    _apply_lims(ax, t["target"], dim)
+    ax = _cell(fig, n, ncols, 0, 1, recon[cov], t["theta"][cov],
+               "atlas recon — best firing atom per point, one at a time",
+               vmin=vmn, vmax=vmx)
+    _apply_lims(ax, t["target"], dim)
+    ax = fig.add_subplot(n, ncols, 3, projection="3d" if dim >= 3 else None)
+    _scatter_sel(ax, t["target"], ~cov, dim, c="0.85")
+    for j in range(len(av)):
+        sel = owner == j
+        _scatter_sel(ax, recon, sel, dim, c=t["theta"][sel], cmap=_atom_cmap(j), alpha=0.85,
+                     vmin=vmn, vmax=vmx)
     ax.set_xticks([]); ax.set_yticks([])
     if dim >= 3:
         ax.set_zticks([])
-    ax.set_title(f"owning atom (gray=uncovered, black=overlap; overlap {t['frac_overlap']*100:.0f}%)",
+    _apply_lims(ax, t["target"], dim)
+    ax.set_title(f"same recon by OWNING atom (gray = uncovered; overlap {t['frac_overlap']*100:.0f}%)",
                  fontsize=8)
     for j, a in enumerate(av):
-        cm = _atom_cmap(j)
         cond = "n/a" if np.isnan(a["cond_fvu"]) else f"{a['cond_fvu']:.3f}"
-        _cell(fig, n, ncols, j + 1, 0, a["latent"], a["theta"],
-              f"atom {a['atom']} (rank {a['rank']}) latent — fires on {a['frac']*100:.0f}%", cmap=cm)
-        _cell(fig, n, ncols, j + 1, 1, a["recon"], a["theta"],
-              f"atom {a['atom']} recon on its region — conditional FVU {cond}", cmap=cm)
+        ax = _cell(fig, n, ncols, 1 + j // ncols, j % ncols, a["latent"], a["theta"],
+                   f"atom {a['atom']} (rank {a['rank']}) latent — fires on {a['frac']*100:.0f}%, "
+                   f"cond FVU {cond}", vmin=vmn, vmax=vmx)
+        if a["latent"].shape[1] < 3:                  # frame the panel in the atom's hue (2D axes only)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(_atom_cmap(j)(1.0)); spine.set_linewidth(2.5)
     verdict = "clean tiling" if t["tiled"] and t["single"] >= 0.05 else (
         "single-atom capture" if t["tiled"] else "redundant overlap (atoms sum, not tile)")
     fig.suptitle(f"{nm}: {t['n_used']} atoms — {verdict}  "
                  f"(single FVU {t['single']:.3f}, full FVU {t['full']:.3f})", fontsize=11)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(path, dpi=120); plt.close(fig)
 
 
@@ -276,24 +304,35 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
             ss = np.arange(n_iso) if n_iso <= cap else rng_i.choice(n_iso, cap, replace=False)
             on = gmask[best].nonzero(as_tuple=True)[0]         # the atom's ON dims (need not be contiguous)
             latent_dims = on if on.numel() else torch.zeros(1, dtype=torch.long, device=dev)
-            # per PARTICIPATING atom (the tiling view): its firing pattern on the ss subsample, plus
-            # its latent chart and canonical-coords recon restricted to its OWN firing samples.
+            # per PARTICIPATING atom (the tiling view): its latent chart on its OWN firing samples.
             atoms_viz = []
             for a in part[:6].tolist():
                 on_a = gmask[a].nonzero(as_tuple=True)[0]
                 dims_a = on_a if on_a.numel() else torch.zeros(1, dtype=torch.long, device=dev)
-                fire = active_i[:, a].bool().cpu().numpy()
-                idx = np.where(fire)[0]
+                idx = np.where(active_i[:, a].bool().cpu().numpy())[0]
                 if len(idx) > cap:
                     idx = np.sort(rng_i.choice(idx, cap, replace=False))
                 idx_t = torch.as_tensor(idx, device=dev)
                 atoms_viz.append(dict(
                     atom=int(a), rank=int(round(float(atom_rank_vec[a]))),
                     frac=float(firing_frac[a]), cond_fvu=_cond_fvu(int(a)),
-                    fire_ss=fire[ss],
                     latent=z_i[idx_t][:, a][:, dims_a].cpu().numpy(),
-                    recon=(contrib[idx_t, a] @ Vi.t()).cpu().numpy(),
                     theta=np.asarray(th_i)[idx, 0]))
+            # one-chart-AT-A-TIME atlas recon on the ss subsample: each point rendered by its best
+            # FIRING atom ALONE (single-atom outputs only, never the sum; pointwise-error tiebreak
+            # under overlap). owner = index into atoms_viz, -1 where no participating atom fires.
+            sub = torch.as_tensor(ss, device=dev)
+            part_t = part[:6]
+            if part_t.numel():
+                err = ((contrib[sub][:, part_t] - x_iso[sub].unsqueeze(1)) ** 2).sum(-1)
+                fire_sub = active_i[sub][:, part_t].bool()
+                owner = err.masked_fill(~fire_sub, float("inf")).argmin(1)
+                atlas_owner = torch.where(fire_sub.any(1), owner, torch.full_like(owner, -1))
+                atlas_recon = (contrib[sub, part_t[owner]] @ Vi.t()).cpu().numpy()
+                atlas_owner = atlas_owner.cpu().numpy()
+            else:
+                atlas_recon = np.zeros((len(ss), inst.ki), np.float32)
+                atlas_owner = np.full(len(ss), -1)
             tri[inst.name] = dict(
                 target=(x_iso[ss] @ Vi.t()).cpu().numpy(),
                 latent=z_i[ss][:, best][:, latent_dims].cpu().numpy(),
@@ -302,7 +341,8 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
                 theta=np.asarray(th_i)[ss, 0], rank=r, ki=int(inst.ki), di=int(inst.di),
                 type=inst.type, best=best, tiled=tiled, frac_overlap=frac_overlap,
                 n_used=n_used, used_ids=str([a["atom"] for a in atoms[:4]]),
-                single=single, full=full, atoms_viz=atoms_viz)
+                single=single, full=full, atoms_viz=atoms_viz,
+                atlas_recon=atlas_recon, atlas_owner=atlas_owner)
     # multi-threshold capture (the 0.05 cliff hides near-misses): single + tiled at thresh and 2*thresh,
     # recomputed from the stored per-instance fields. tiled at th = single<th OR (full<th AND disjoint).
     captures_by_thresh = {f"{th:.3f}": dict(
