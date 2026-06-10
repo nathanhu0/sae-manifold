@@ -37,11 +37,12 @@ EXTRA_KEYS = ["lam", "lam_preact", "jump_eps", "lr", "lr_schedule", "lam_warmup_
 def reeval_one(ckpt_path):
     d = Path(ckpt_path).parent
     mfile = d / "metrics.json"
-    old = json.load(open(mfile)) if mfile.exists() else {}
     # preserve the FIRST on-disk metrics (the per-sample buggy ones) exactly once
     backup = d / "metrics_persample_buggy.json"
     if mfile.exists() and not backup.exists():
         shutil.copy(mfile, backup)
+    # compare against the ORIGINAL per-sample metrics (the backup), not the current file
+    old = json.load(open(backup)) if backup.exists() else (json.load(open(mfile)) if mfile.exists() else {})
 
     ck = torch.load(ckpt_path, map_location=DEV)
     m = ManifoldSAE(d_model=256, rank_dist=ck["pool"], enc_dims=ck["enc_dims"],
@@ -68,8 +69,10 @@ def main():
             rows.append(dict(
                 run=Path(cp).parts[-3], cell=Path(cp).parts[-2],
                 old_single=old.get("captured_single"), new_single=new["captured_single"],
+                new_tiled=new["captured_tiled"],
                 old_full=old.get("captured_full"), new_full=new["captured_full"],
                 old_mean_single=old.get("mean_single_fvu"), new_mean_single=new["mean_single_fvu"],
+                new_mean_cond=new["mean_cond_fvu"],
                 fvu_mix=new["fvu"], act_rank=new["act_rank"], dead=new["dead_atoms"]))
         except Exception:
             print(f"  !! FAILED on {cp}", flush=True); traceback.print_exc()
@@ -77,16 +80,17 @@ def main():
 
     # master comparison
     json.dump(rows, open(OUT_DIR / "reeval_comparison.json", "w"), indent=1)
-    lines = ["# Campaign re-eval: per-sample (buggy) vs aggregate (fixed) FVU\n",
-             "| run | cell | single old->new | full old->new | mean_single old->new | fvu_mix | act_rank | dead |",
-             "|---|---|---|---|---|---|---|---|"]
+    lines = ["# Campaign re-eval: per-sample (buggy) -> aggregate+tiling (fixed) FVU\n",
+             "single = strict (one atom spans whole manifold); tiled = clean local-chart capture; full = union.\n",
+             "| run | cell | single old->new | tiled | full old->new | mean_single old->new | mean_cond | fvu_mix | act_rank | dead |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         if r.get("error"):
-            lines.append(f"| {r['run']} | {r['cell']} | ERROR | | | | | |"); continue
+            lines.append(f"| {r['run']} | {r['cell']} | ERROR | | | | | | | |"); continue
         def ms(v): return f"{v:.3f}" if isinstance(v, (int, float)) else str(v)
-        lines.append(f"| {r['run']} | {r['cell']} | {r['old_single']}->{r['new_single']} | "
+        lines.append(f"| {r['run']} | {r['cell']} | {r['old_single']}->{r['new_single']} | {r['new_tiled']} | "
                      f"{r['old_full']}->{r['new_full']} | {ms(r['old_mean_single'])}->{ms(r['new_mean_single'])} | "
-                     f"{r['fvu_mix']:.4f} | {r['act_rank']:.1f} | {r['dead']} |")
+                     f"{ms(r['new_mean_cond'])} | {r['fvu_mix']:.4f} | {r['act_rank']:.1f} | {r['dead']} |")
     (OUT_DIR / "reeval_comparison.md").write_text("\n".join(lines) + "\n")
     print(f"\n[reeval] DONE. Wrote {OUT_DIR/'reeval_comparison.md'} and .json", flush=True)
     print("\n".join(lines), flush=True)

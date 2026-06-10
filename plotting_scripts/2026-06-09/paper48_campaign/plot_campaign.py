@@ -40,9 +40,14 @@ def load_grid(base, lr):
         cs05 = sum(s < 0.05 for s in singles) if singles else r["captured_single"]
         cs10 = sum(s < 0.10 for s in singles) if singles else None
         ms = float(np.mean(singles)) if singles else r.get("mean_single_fvu")
+        # tiled = clean-local-chart capture (single OR union-with-good-conditional); separates a tiled
+        # manifold (segment) from a broken split. Falls back to captured_tiled if per_instance lacks the flag.
+        tiled = (sum(bool(p.get("tiled_capture")) for p in r["per_instance"])
+                 if r.get("per_instance") and "tiled_capture" in r["per_instance"][0]
+                 else r.get("captured_tiled"))
         rows.append(dict(K=int(m.group(1)), lam=float(m.group(2)), mult=float(m.group(3)),
                          rev=r.get("lam_preact_dim"), lr=lr, fvu=r["fvu"], act_rank=r["act_rank"],
-                         cs=cs05, cs10=cs10, mean_single=ms, cf=r["captured_full"], n=r["n_inst"]))
+                         cs=cs05, cs10=cs10, tiled=tiled, mean_single=ms, cf=r["captured_full"], n=r["n_inst"]))
     return rows
 
 
@@ -141,20 +146,24 @@ def main():
     if k8:
         lams = sorted({r["lam"] for r in k8}); mults = sorted({r["mult"] for r in k8})
         M = np.full((len(mults), len(lams)), np.nan)
+        MT = np.full((len(mults), len(lams)), np.nan)
         for r in k8:
             M[mults.index(r["mult"]), lams.index(r["lam"])] = r["cs"]
+            if r.get("tiled") is not None:
+                MT[mults.index(r["mult"]), lams.index(r["lam"])] = r["tiled"]
         fig, axh = plt.subplots(figsize=(6, 4.5))
         im = axh.imshow(M, origin="lower", aspect="auto", cmap="viridis")
         axh.set_xticks(range(len(lams))); axh.set_xticklabels([f"{l:g}" for l in lams])
         axh.set_yticks(range(len(mults))); axh.set_yticklabels([f"{m:g}x" for m in mults])
         axh.set_xlabel("lambda (sparsity)"); axh.set_ylabel("preact mult (x rule lam/30)")
-        axh.set_title(f"K8 lr{lr}: single-capture /{n} over lambda x preact")
+        axh.set_title(f"K8 lr{lr}: single-capture /{n} (tiled below) over lambda x preact")
         for i in range(len(mults)):
             for j in range(len(lams)):
                 if not np.isnan(M[i, j]):
-                    axh.text(j, i, f"{int(M[i, j])}", ha="center", va="center",
-                             color="white" if M[i, j] < np.nanmax(M) * 0.6 else "black", fontsize=10)
-        fig.colorbar(im, label=f"single /{n}"); fig.tight_layout()
+                    lab = f"{int(M[i, j])}" + (f"\n({int(MT[i, j])})" if not np.isnan(MT[i, j]) else "")
+                    axh.text(j, i, lab, ha="center", va="center",
+                             color="white" if M[i, j] < np.nanmax(M) * 0.6 else "black", fontsize=9)
+        fig.colorbar(im, label=f"single /{n}  (tiled in parens)"); fig.tight_layout()
         fig.savefig(OUT / "fig2_heatmap.png", dpi=140); plt.close(fig)
 
     # ---------- fig3: data-scale ----------
@@ -188,7 +197,7 @@ def main():
             continue
         b = max(g, key=lambda r: (r["cs"], -r["fvu"]))
         print(f"BEST {label:14s}: K{b['K']} lam{b['lam']:g} {b['mult']:g}x -> "
-              f"single {b['cs']}/{n}@.05  {b.get('cs10','?')}/{n}@.10  "
+              f"single {b['cs']}/{n}@.05  tiled {b.get('tiled','?')}/{n}  {b.get('cs10','?')}/{n}@.10  "
               f"mean_single_FVU={b.get('mean_single', float('nan')):.3f}  FVU(mix)={b['fvu']:.4f}  act_rank={b['act_rank']:.1f}")
 
 
