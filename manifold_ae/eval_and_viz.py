@@ -540,12 +540,11 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
     (out / "report.md").write_text("\n".join(L) + "\n")
 
 
-def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
-                 thresh=0.05, cap=400, extra=None, l0=None):
-    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    res, tri = compute_capture(model, zoo, scale, p_active, n, n_iso, thresh, cap, want_tri=True, l0=l0)
-    res.update(extra or {})
-    json.dump(res, open(out / "metrics.json", "w"), indent=1)
+def render_figures(res, tri, out, thresh=0.05):
+    """ALL figure + report rendering from (res, tri) -- no model, no GPU. tri comes either fresh
+    from compute_capture or from the cached viz_arrays.npy, so figure iteration is a local CPU
+    operation (eval CLI: --figures-only)."""
+    out = Path(out)
     _strip(res["per_instance"], thresh, out / "fvu_strip.png")
     _rank_fvu_fig(res, out / "rank_vs_fvu.png", thresh)
     tri_paths = _overview_grid(tri, out)
@@ -555,6 +554,16 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
             _tiling_fig(nm, t, out / f"tiling_{nm}.png")
             tiling_paths[nm] = f"tiling_{nm}.png"
     _report_md(res, tri_paths, tiling_paths, out, thresh)
+
+
+def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
+                 thresh=0.05, cap=400, extra=None, l0=None):
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    res, tri = compute_capture(model, zoo, scale, p_active, n, n_iso, thresh, cap, want_tri=True, l0=l0)
+    res.update(extra or {})
+    json.dump(res, open(out / "metrics.json", "w"), indent=1)
+    np.save(out / "viz_arrays.npy", tri, allow_pickle=True)   # cache the viz payload (a few MB):
+    render_figures(res, tri, out, thresh)                     # figures re-render later WITHOUT a GPU
     N = res["n_inst"]; loose = res["captures_by_thresh"][f"{2 * thresh:.3f}"]
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} dead={res['dead_atoms']}\n"
@@ -602,8 +611,18 @@ if __name__ == "__main__":
     ap.add_argument("ckpt", help="path to ckpt.pt, or a run dir containing ckpt.pt")
     ap.add_argument("--out-dir", default=None, help="output dir (default: the ckpt's own dir)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--figures-only", action="store_true",
+                    help="re-render figures + report from the run dir's cached metrics.json + "
+                         "viz_arrays.npy -- CPU-only, no model forward")
     a = ap.parse_args()
     cpath = Path(a.ckpt); cpath = cpath / "ckpt.pt" if cpath.is_dir() else cpath
+    if a.figures_only:
+        rd = Path(a.out_dir or cpath.parent)
+        res = json.load(open(rd / "metrics.json"))
+        tri = np.load(rd / "viz_arrays.npy", allow_pickle=True).item()
+        render_figures(res, tri, rd, res.get("thresh", 0.05))
+        print(f"[figures-only] re-rendered figures + report in {rd}")
+        raise SystemExit(0)
     model, zoo, scale, l0, ck = load_checkpoint(cpath, a.device)
     # carry the ckpt's training hyperparams into metrics.json (same provenance the trainer's own
     # inline eval writes) so re-evals don't strip lam/lam_atom/... from downstream aggregation.
