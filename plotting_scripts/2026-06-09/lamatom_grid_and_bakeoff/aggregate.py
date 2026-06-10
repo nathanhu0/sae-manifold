@@ -142,23 +142,25 @@ def heatmaps(rows):
 
 
 def paretos(rows):
-    """Sparsity-reconstruction frontiers with MEASURED sparsity on x (atoms firing / sample, and
-    rank-dof / sample) -- lam_atom is an annotation along each lambda row's curve, never an axis."""
-    for key, fname, xlabel, mark_l0 in [
-            ("atoms", "pareto_atoms_fvu.png", "atoms firing / sample (measured)", True),
-            ("act_rank", "pareto_rank_fvu.png", "active rank-dof / sample (measured)", False)]:
+    """ONE sparsity-reconstruction figure, two panes of MEASURED sparsity: left = atoms firing /
+    sample, right = total active rank-dof / sample. lam_atom is an annotation along each lambda
+    row's curve, never an axis."""
+    panes = [("atoms", "atoms firing / sample (measured)", True),
+             ("act_rank", "total active rank-dof / sample (measured)", False)]
+    fig, axes = plt.subplots(1, 2, figsize=(14.5, 6), sharey=True)
+    for ax, (key, xlabel, mark_l0) in zip(axes, panes):
         rs = [r for r in rows if r[key] is not None]
         if not rs:
-            print(f"  [skip] {fname} (no {key} yet — run the re-eval pass)")
+            ax.set_title(f"(no {key} yet — run the re-eval pass)", fontsize=9)
             continue
-        fig, ax = plt.subplots(figsize=(8.5, 6))
         for lam in sorted({r["lam"] for r in rs if r["group"] in ("grid", "baseline")}):
             seq = sorted([r for r in rs if r["group"] in ("grid", "baseline") and r["lam"] == lam],
                          key=lambda r: r["lam_atom"])
             if not seq:
                 continue
             ax.plot([r[key] for r in seq], [r["fvu"] for r in seq], "o-", lw=1.2,
-                    color=LAM_COLORS.get(lam, "k"), label=f"lambda={lam} (lam_atom 0 -> {seq[-1]['lam_atom']:g})")
+                    color=LAM_COLORS.get(lam, "k"),
+                    label=f"lambda={lam} (lam_atom 0 -> {seq[-1]['lam_atom']:g})")
             for r in seq:
                 ax.annotate(f"{r['lam_atom']:g}", (r[key], r["fvu"]), fontsize=6, alpha=0.8,
                             xytext=(3, 3), textcoords="offset points")
@@ -172,10 +174,12 @@ def paretos(rows):
                                 xytext=(3, -6), textcoords="offset points")
         if mark_l0:
             ax.axvline(4.0, color="0.7", ls="--", lw=1, label="data L0 = 4 (dedicated code)")
-        ax.set_xlabel(xlabel); ax.set_ylabel("mixture FVU (log)"); ax.set_yscale("log")
-        ax.set_title("Sparsity vs reconstruction — lam_atom annotated along each lambda row")
-        ax.legend(fontsize=8); ax.grid(alpha=0.25)
-        fig.tight_layout(); fig.savefig(OUT_DIR / fname, dpi=150); plt.close(fig)
+        ax.set_xlabel(xlabel); ax.set_yscale("log"); ax.grid(alpha=0.25)
+    axes[0].set_ylabel("mixture FVU (log)")
+    axes[0].legend(fontsize=8)
+    fig.suptitle("Sparsity vs reconstruction — lam_atom annotated along each lambda row", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(OUT_DIR / "pareto_sparsity_fvu.png", dpi=150); plt.close(fig)
 
 
 def pick_best(rows):
