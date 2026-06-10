@@ -84,20 +84,22 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     and full-model FVU are free of co-active cross-talk. tri = per-manifold viz arrays (empty
     if not want_tri -- skip it for cheap periodic evals)."""
     dev = next(model.parameters()).device
-    rng = np.random.default_rng(123)
+    l0_presence = l0                                       # presence mode (int L0 or None); keep separate from
+    rng_mix = np.random.default_rng(123)                   # forward's rank-L0 below. Mixture gets its OWN rng; each
     # mixture eval at the training presence mode: constant-L0 (paper) if l0 set, else Bernoulli.
-    x, masks = zoo.sample(n, l0, rng, p_active=(None if l0 is not None else p_active))
+    x, masks = zoo.sample(n, l0_presence, rng_mix, p_active=(None if l0_presence is not None else p_active))
     xt = torch.tensor(x, device=dev) / scale
     with torch.no_grad():
-        xh, z, gpre, active, dec, l0 = model.forward_jump(xt)
+        xh, z, gpre, active, dec, l0_rank = model.forward_jump(xt)
         fvu_mix = (((xh - xt) ** 2).sum() / (xt ** 2).sum()).item()
-        ever = (active.sum(0) > 0).cpu().numpy()
+        firing_frac_mix = active.float().mean(0).cpu().numpy()   # per-atom fraction of mixture samples it fires on
     act_count = masks.sum(1)
     gmask = model.rank_gate().detach()                     # (N, max_rank) {0,1} on-dim mask (learned or fixed)
     atom_rank_vec = gmask.sum(-1).cpu()                    # per-atom rank = on-dim count (NEVER max_rank)
     rows, tri = [], {}
     for idx, inst in enumerate(zoo.instances):
-        th_i, amb = inst.sample_full(n_iso, rng)               # ONLY manifold idx
+        rng_i = np.random.default_rng(10_000 + idx)            # per-instance rng: isolated FVUs + best_atom are
+        th_i, amb = inst.sample_full(n_iso, rng_i)             # reproducible regardless of n / want_tri / order
         x_iso = torch.tensor(amb, device=dev) / scale          # at the in-mixture per-manifold scale
         with torch.no_grad():
             xh_i, z_i, _, active_i, dec_i, _ = model.forward_jump(x_iso)
@@ -109,25 +111,45 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
             # aggregate FVU is ~0.01; verified by claude_scripts/fvu_definition_stress_test.py). Data is
             # per-instance mean-centered, so aggregate-energy == variance-FVU here.
             tot = (x_iso ** 2).sum().clamp_min(1e-9)                              # scalar total energy
-            fa = ((contrib - x_iso.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / tot      # (N,) per-atom aggregate FVU
+            fa = ((contrib - x_iso.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / tot      # (N,) WHOLE-manifold aggregate FVU
             best = int(fa.argmin()); r = int(round(float(atom_rank_vec[best])))
-            single = float(fa[best])
-            full = float(((xh_i - x_iso) ** 2).sum() / tot)
+            single = float(fa[best])                           # best atom over the WHOLE manifold (strict dedication)
+            full = float(((xh_i - x_iso) ** 2).sum() / tot)    # union of every firing atom
             # which atoms actually carry this manifold: fraction of its points each fires on.
             # A split shows >=2 atoms each firing on a complementary chunk (e.g. ~50/50 arcs),
-            # each with poor single FVU, but the union (full) reconstructs it.
+            # each with poor WHOLE-manifold FVU, but the union (full) reconstructs it.
             firing_frac = active_i.float().mean(0)             # (N,)
+            # CONDITIONAL FVU: an atom's error ONLY on the samples it fires on. Separates a clean spatial TILING
+            # (each atom near-perfect on its own chart -- single is high only because no ONE atom spans the whole
+            # manifold, e.g. segment_0 cond ~0.001) from a genuinely BROKEN split (atoms bad even where they fire,
+            # e.g. flat_disk_1 cond ~0.42). single<thresh asks "does one atom span the whole manifold"; tiled_capture
+            # asks "does the model reconstruct it with clean local charts". Denominator is firing-set ENERGY (the
+            # firing region is a SUB-arc, not mean-centred, so energy is the natural normaliser).
+            def _cond_fvu(a):
+                fire = active_i[:, a].bool()
+                if int(fire.sum()) < 5:
+                    return float("nan")
+                num = ((contrib[fire, a] - x_iso[fire]) ** 2).sum()
+                den = (x_iso[fire] ** 2).sum().clamp_min(1e-9)
+                return float(num / den)
+            cond_best = _cond_fvu(best)                        # best-atom quality on its OWN firing region
+            ff_best = float(firing_frac[best])
             part = (firing_frac > 0.05).nonzero(as_tuple=True)[0]
             part = part[firing_frac[part].argsort(descending=True)]
             atoms = [dict(atom=int(i), rank=int(round(float(atom_rank_vec[i]))), frac=float(firing_frac[i]),
-                          fvu=float(fa[i])) for i in part[:8]]
+                          fvu=float(fa[i]), cond_fvu=_cond_fvu(int(i))) for i in part[:8]]
             n_used = int(len(part))
+            # captured-as-clean-tiling: a single atom spans it, OR the union reconstructs it AND its dominant
+            # atom is a clean local chart (rules out the redundant-overlap broken split, which has cond_best high).
+            tiled = bool(single < thresh
+                         or (full < thresh and not np.isnan(cond_best) and cond_best < thresh))
         rows.append(dict(name=inst.name, type=inst.type, ki=int(inst.ki), di=int(inst.di),
-                         best_rank=r, best_atom=best, single=single, full=full,
+                         best_rank=r, best_atom=best, single=single, full=full, cond_fvu=cond_best,
+                         best_firing_frac=ff_best, tiled_capture=tiled,
                          n_atoms_used=n_used, atoms=atoms))
         if want_tri:
             Vi = torch.tensor(inst.V, device=dev)
-            ss = np.arange(n_iso) if n_iso <= cap else rng.choice(n_iso, cap, replace=False)
+            ss = np.arange(n_iso) if n_iso <= cap else rng_i.choice(n_iso, cap, replace=False)
             on = gmask[best].nonzero(as_tuple=True)[0]         # the atom's ON dims (need not be contiguous)
             latent_dims = on if on.numel() else torch.zeros(1, dtype=torch.long, device=dev)
             tri[inst.name] = dict(
@@ -146,17 +168,25 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         fam.setdefault(r["type"], []).append(r)
     per_family = {t: dict(
         n=len(rs), captured_single=sum(r["single"] < thresh for r in rs),
+        captured_tiled=sum(r["tiled_capture"] for r in rs),
         mean_single_fvu=float(np.mean([r["single"] for r in rs])),
         mean_full_fvu=float(np.mean([r["full"] for r in rs])),
+        mean_cond_fvu=float(np.nanmean([r["cond_fvu"] for r in rs])),
         atoms_per_manifold=float(np.mean([r["n_atoms_used"] for r in rs])),
         mean_rank=float(np.mean([r["best_rank"] for r in rs]))) for t, rs in fam.items()}
-    res = dict(fvu=fvu_mix, act_rank=float(l0.mean()), n_inst=len(rows),
+    res = dict(fvu=fvu_mix, act_rank=float(l0_rank.mean()), n_inst=len(rows),
                active_count_mean=float(act_count.mean()), active_count_std=float(act_count.std()),
-               dead_atoms=int((~ever).sum()),
+               dead_atoms=int((firing_frac_mix < 1e-3).sum()),   # firing-fraction floor (strict ==0 was n/seed-unstable)
                captured_single=sum(m["single"] < thresh for m in rows),
                captured_full=sum(m["full"] < thresh for m in rows),
+               captured_tiled=sum(m["tiled_capture"] for m in rows),
                mean_single_fvu=float(np.mean([m["single"] for m in rows])),
-               eval_mode="isolated", per_family=per_family, per_instance=rows)
+               mean_cond_fvu=float(np.nanmean([m["cond_fvu"] for m in rows])),
+               eval_mode="isolated",
+               eval_n=int(n), eval_n_iso=int(n_iso), thresh=float(thresh), eval_cap=int(cap),
+               presence=(f"constant_l0={l0_presence}" if l0_presence is not None
+                         else f"bernoulli_p_active={p_active}"),
+               per_family=per_family, per_instance=rows)
     return res, tri
 
 
@@ -171,13 +201,15 @@ def eval_and_viz(model, zoo, scale, out_dir, p_active=0.25, n=6000, n_iso=2000,
     print(f"[eval] FVU(mix)={res['fvu']:.4f} act_rank={res['act_rank']:.1f} "
           f"active/sample={res['active_count_mean']:.1f}+-{res['active_count_std']:.1f} "
           f"dead={res['dead_atoms']}  captured(isolated) single={res['captured_single']}/{res['n_inst']} "
-          f"full={res['captured_full']}/{res['n_inst']}  mean_single_FVU={res['mean_single_fvu']:.3f}", flush=True)
-    # per-family CONTINUOUS view: mean FVU (near-misses) + atoms/manifold (spanning) + rank
-    print("  [per-family] type        cap   mean_single_FVU  mean_full_FVU  atoms/mfld  rank", flush=True)
+          f"tiled={res['captured_tiled']}/{res['n_inst']} full={res['captured_full']}/{res['n_inst']}  "
+          f"mean_single_FVU={res['mean_single_fvu']:.3f} mean_cond_FVU={res['mean_cond_fvu']:.3f}", flush=True)
+    # per-family CONTINUOUS view: single (strict) + tiled (clean charts) caps, mean single/cond/full FVU, spanning, rank
+    print("  [per-family] type        single tiled  mean_single  mean_cond  mean_full  atoms/mfld  rank", flush=True)
     for t in sorted(res["per_family"]):
         d = res["per_family"][t]
-        print(f"   {t:13s} {d['captured_single']}/{d['n']}   {d['mean_single_fvu']:.3f}            "
-              f"{d['mean_full_fvu']:.3f}          {d['atoms_per_manifold']:.1f}         {d['mean_rank']:.1f}", flush=True)
+        print(f"   {t:13s} {d['captured_single']}/{d['n']}   {d['captured_tiled']}/{d['n']}   "
+              f"{d['mean_single_fvu']:.3f}       {d['mean_cond_fvu']:.3f}      {d['mean_full_fvu']:.3f}      "
+              f"{d['atoms_per_manifold']:.1f}        {d['mean_rank']:.1f}", flush=True)
     # per-manifold: which atoms carry it (best single vs the full participating set) -> splitting
     for m in sorted(res["per_instance"], key=lambda r: -r["full"]):
         ids = " ".join(f"{a['atom']}(r{a['rank']},{a['frac']*100:.0f}%)" for a in m["atoms"])
