@@ -185,8 +185,24 @@ def _overview_grid(tri, out_dir):
                  f"v{vi} latent (atom {t['best']} r{t['rank']})", cm, vmn, vmx)
             cell(r, 3 + 3 * v, t["decoder"], t["theta"],
                  f"v{vi} recon FVU {t['single']:.3f}", cm, vmn, vmx)
-    fig.suptitle("Per family: one canonical example, then per variant the best-atom latent chart "
-                 "+ its single-atom recon (shared gradient within each pair)", fontsize=12, y=0.995)
+    # column-group labels + vertical separators (drawn in figure coords from the gridspec slots)
+    import matplotlib.lines as mlines
+    top = gs[0, 0].get_position(fig).y1
+    bot = gs[nrows - 1, 0].get_position(fig).y0
+    for v in range(nvar):
+        sp = gs[0, 1 + 3 * v].get_position(fig)
+        x = sp.x0 + sp.width / 2
+        fig.add_artist(mlines.Line2D([x, x], [bot - 0.005, top + 0.045], color="0.65", lw=0.9,
+                                     transform=fig.transFigure))
+    p0 = gs[0, 0].get_position(fig)
+    fig.text(p0.x0 + p0.width / 2, top + 0.03, "original manifold", ha="center", fontsize=10)
+    for v in range(nvar):
+        pl = gs[0, 2 + 3 * v].get_position(fig)
+        pr = gs[0, 3 + 3 * v].get_position(fig)
+        fig.text((pl.x0 + pr.x1) / 2, top + 0.03, f"latent {v + 1}    reconstruction {v + 1}",
+                 ha="center", fontsize=10)
+    fig.suptitle("Per family: one canonical example, then per variant (sorted worst single-FVU first) "
+                 "the best-atom latent chart + its single-atom recon", fontsize=12, y=top + 0.075)
     fig.savefig(Path(out_dir) / "grid_overview.png", dpi=115, bbox_inches="tight"); plt.close(fig)
     return {"overview": "grid_overview.png"}
 
