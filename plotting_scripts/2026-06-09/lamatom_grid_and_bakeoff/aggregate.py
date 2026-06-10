@@ -142,26 +142,39 @@ def heatmaps(rows):
 
 
 def paretos(rows):
-    for key, fname, xlabel, extra in [
-            ("act_rank", "pareto_rank_fvu.png", "act_rank (rank-dof / sample)", None),
-            ("atoms", "pareto_atoms_fvu.png", "atoms firing / sample", 4.0)]:
+    """Sparsity-reconstruction frontiers with MEASURED sparsity on x (atoms firing / sample, and
+    rank-dof / sample) -- lam_atom is an annotation along each lambda row's curve, never an axis."""
+    for key, fname, xlabel, mark_l0 in [
+            ("atoms", "pareto_atoms_fvu.png", "atoms firing / sample (measured)", True),
+            ("act_rank", "pareto_rank_fvu.png", "active rank-dof / sample (measured)", False)]:
         rs = [r for r in rows if r[key] is not None]
         if not rs:
             print(f"  [skip] {fname} (no {key} yet — run the re-eval pass)")
             continue
-        fig, ax = plt.subplots(figsize=(8, 6))
-        for r in rs:
-            c = LAM_COLORS.get(r["lam"], "0.5") if r["group"] in ("grid", "baseline") else \
-                ("C3" if r["group"] == "bakeoff" else "C4")
-            ax.scatter(r[key], r["fvu"], c=c, s=28 + 8 * np.log10(1 + 1e3 * r["lam_atom"]), alpha=0.85)
-            ax.annotate(r["label"], (r[key], r["fvu"]), fontsize=5, alpha=0.7,
-                        xytext=(3, 3), textcoords="offset points")
-        if extra:
-            ax.axvline(extra, color="0.7", ls="--", lw=1, label="data L0 = 4")
-            ax.legend(fontsize=8)
-        ax.set_xlabel(xlabel); ax.set_ylabel("mixture FVU"); ax.set_yscale("log")
-        ax.set_title(f"{xlabel} vs reconstruction (blue/orange/green = lambda rows; red = bakeoff; purple = fixed pool)")
-        ax.grid(alpha=0.25)
+        fig, ax = plt.subplots(figsize=(8.5, 6))
+        for lam in sorted({r["lam"] for r in rs if r["group"] in ("grid", "baseline")}):
+            seq = sorted([r for r in rs if r["group"] in ("grid", "baseline") and r["lam"] == lam],
+                         key=lambda r: r["lam_atom"])
+            if not seq:
+                continue
+            ax.plot([r[key] for r in seq], [r["fvu"] for r in seq], "o-", lw=1.2,
+                    color=LAM_COLORS.get(lam, "k"), label=f"lambda={lam} (lam_atom 0 -> {seq[-1]['lam_atom']:g})")
+            for r in seq:
+                ax.annotate(f"{r['lam_atom']:g}", (r[key], r["fvu"]), fontsize=6, alpha=0.8,
+                            xytext=(3, 3), textcoords="offset points")
+        for grp, c, mk, lbl in [("bakeoff", "C3", "s", "gate bake-off"), ("fixedpool", "C4", "D", "fixed pool")]:
+            gs = [r for r in rs if r["group"] == grp]
+            if gs:
+                ax.scatter([r[key] for r in gs], [r["fvu"] for r in gs], c=c, marker=mk, s=34,
+                           alpha=0.85, label=lbl)
+                for r in gs:
+                    ax.annotate(r["label"], (r[key], r["fvu"]), fontsize=5, alpha=0.6,
+                                xytext=(3, -6), textcoords="offset points")
+        if mark_l0:
+            ax.axvline(4.0, color="0.7", ls="--", lw=1, label="data L0 = 4 (dedicated code)")
+        ax.set_xlabel(xlabel); ax.set_ylabel("mixture FVU (log)"); ax.set_yscale("log")
+        ax.set_title("Sparsity vs reconstruction — lam_atom annotated along each lambda row")
+        ax.legend(fontsize=8); ax.grid(alpha=0.25)
         fig.tight_layout(); fig.savefig(OUT_DIR / fname, dpi=150); plt.close(fig)
 
 
