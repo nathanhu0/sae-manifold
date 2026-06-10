@@ -74,7 +74,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)                 # init + batch-order seed; zoo GEOMETRY stays seed=0
     ap.add_argument("--sigma-eps", type=float, default=1e-5)       # ambient Gaussian noise in TRAINING mixtures (eval stays clean)
     ap.add_argument("--lam-latent-moment", type=float, default=0.0)  # push each USED latent dim to zero-mean/unit-var over its firing samples
-    ap.add_argument("--residual", action="store_true")             # skip connections where consecutive funnel widths match (deep winding stacks)
+    ap.add_argument("--residual", action="store_true")             # ONE-matmul skips where consecutive funnel widths match
+    ap.add_argument("--res-blocks", type=int, default=0)           # standard two-matmul residual blocks at width enc_dims[-1] (winding stack)
+    ap.add_argument("--block-expansion", type=int, default=2)      # inner width multiplier of each residual block
     a = ap.parse_args()
     enc_dims = tuple(int(x) for x in a.enc_dims.split(","))
     pool = {int(k): int(v) for k, v in (kv.split(":") for kv in a.pool.split(","))}
@@ -94,7 +96,8 @@ def main():
 
     m = ManifoldSAE(d_model=D, rank_dist=pool, enc_dims=enc_dims,
                     jump_eps=a.jump_eps, learn_rank=a.learn_rank,
-                    gate_grad=a.gate_grad, residual=a.residual).to(DEV)
+                    gate_grad=a.gate_grad, residual=a.residual,
+                    res_blocks=a.res_blocks, block_expansion=a.block_expansion).to(DEV)
     opt = torch.optim.Adam(m.parameters(), lr=a.lr)
     # lambda schedule: ramp 0 -> target over lam_warmup_steps, then HOLD. Default (None) =
     # ramp over the whole run (legacy). Holding at target is what lets the model actually
@@ -200,7 +203,8 @@ def main():
                 "l0_rank_floor": a.l0_rank_floor, "gate_grad": a.gate_grad,
                 "seed": a.seed, "sigma_eps": a.sigma_eps,
                 "lam_latent_moment": a.lam_latent_moment,
-                "residual": a.residual}, out / "ckpt.pt")
+                "residual": a.residual, "res_blocks": a.res_blocks,
+                "block_expansion": a.block_expansion}, out / "ckpt.pt")
 
     # ---- inline eval + viz: per-manifold single/full FVU strip + canonical|latent|decoder ----
     eval_and_viz(m, zoo, scale, out, p_active=pa, l0=samp_l0,

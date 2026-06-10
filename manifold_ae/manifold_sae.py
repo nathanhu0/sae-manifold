@@ -76,7 +76,7 @@ class BatchedLinear(nn.Module):
 class ManifoldSAE(nn.Module):
     def __init__(self, d_model=4096, rank_dist=None, R_target=100,
                  enc_dims=(256, 128, 64), jump_eps=2.0, learn_rank=False,
-                 gate_grad="rect", residual=False):
+                 gate_grad="rect", residual=False, res_blocks=0, block_expansion=2):
         super().__init__()
         rank_dist = rank_dist or {1: 128, 2: 64, 3: 32, 4: 16}
         ranks = [r for r, c in sorted(rank_dist.items()) for _ in range(c)]
@@ -101,9 +101,22 @@ class ManifoldSAE(nn.Module):
         self.decs = nn.ModuleList(BatchedLinear(N, rdims[i], rdims[i + 1])
                                   for i in range(len(rdims) - 1))
         self.b_dec = nn.Parameter(torch.zeros(d_model))
-        # residual: skip connections inside the funnel wherever consecutive widths match
-        # (h = GELU(W h) + h) -- supports deep winding stacks like (16, 32,32,32).
+        # residual: ONE-matmul skip inside the funnel wherever consecutive widths match
+        # (h = GELU(W h) + h). res_blocks: STANDARD two-matmul residual blocks
+        # (h = h + W2 GELU(W1 h), inner width = block_expansion * w) appended after the encoder
+        # funnel and after the decoder's first map, both at width enc_dims[-1] -- the proper
+        # "winding stack" at the working width w.
         self.residual = residual
+        self.res_blocks_n = res_blocks
+        w = dims[-1]
+        self.enc_blocks = nn.ModuleList(
+            nn.ModuleList([BatchedLinear(N, w, block_expansion * w),
+                           BatchedLinear(N, block_expansion * w, w)])
+            for _ in range(res_blocks))
+        self.dec_blocks = nn.ModuleList(
+            nn.ModuleList([BatchedLinear(N, w, block_expansion * w),
+                           BatchedLinear(N, block_expansion * w, w)])
+            for _ in range(res_blocks))
         # JumpReLU STE bandwidth, in RAW pre-activation units (gpre>0 is the gate boundary).
         self.jump_eps = jump_eps
         # gate_grad: backward estimator for BOTH gate levels (presence + learn-rank dim bias).
@@ -154,13 +167,17 @@ class ManifoldSAE(nn.Module):
         h = x
         for lin in self.encs:
             h = self._step(lin, h)                    # (B, N, enc_dims[-1])
+        for b1, b2 in self.enc_blocks:
+            h = h + b2(F.gelu(b1(h)))                 # standard two-matmul residual block
         z = self.coord(h) * self.rank_gate()          # (B, N, max_rank), masked to (learned) rank
         gpre = self.gate(h).squeeze(-1)               # (B, N) RAW gate pre-activation (no sigmoid)
         return z, gpre
 
     def decode_all(self, z):
-        h = z
-        for lin in self.decs[:-1]:
+        h = self._step(self.decs[0], z)               # rank -> working width w
+        for b1, b2 in self.dec_blocks:
+            h = h + b2(F.gelu(b1(h)))
+        for lin in self.decs[1:-1]:
             h = self._step(lin, h)
         return self.decs[-1](h)                       # (B, N, d_model)
 
