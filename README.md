@@ -38,8 +38,8 @@ per-manifold capture is measurable against ground truth.
   (`manifold_zoo_ref.txt` has the paper-style table of the 8 families)
 - `manifold_ae/manifold_sae.py` — the model: batched per-atom encoder/decoder
   stacks, straight-through binary gates, learnable per-dim rank
-- `run_jumprelu.py` — **the canonical trainer**; its module docstring has the
-  recipe and flag guide
+- `train_manifold_sae.py` — **the canonical trainer**; its module docstring has
+  the recipe and flag guide (`run_jumprelu.py` is a temporary back-compat shim)
 - `manifold_ae/eval_and_viz.py` — the eval suite: per-run `report.md` with
   capture metrics per manifold (best-single-atom / tiled-atlas / full-union
   FVU), per-family triptychs, and per-atom tiling-atlas figures
@@ -49,7 +49,7 @@ per-manifold capture is measurable against ground truth.
 Train (one GPU, ~4 h):
 
 ```bash
-PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python run_jumprelu.py --steps 150000 --lr 3e-4 --lr-schedule warmup_cosine --lam 0.003 --lam-preact 3e-4 --lam-preact-dim 0.0001 --learn-rank --pool 8:64 --l0-rank-floor --l0 4 --variants-per-type 6 --eval-every 30000 --out-dir runs/example
+PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python train_manifold_sae.py --steps 150000 --lr 3e-4 --lr-schedule warmup_cosine --lam 0.003 --lam-preact 3e-4 --lam-preact-dim 0.0001 --learn-rank --pool 8:64 --l0-rank-floor --l0 4 --variants-per-type 6 --eval-every 30000 --out-dir runs/example
 ```
 
 Evaluate any checkpoint or run dir (writes `metrics.json` + `report.md` + figures):
