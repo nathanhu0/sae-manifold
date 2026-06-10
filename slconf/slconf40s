@@ -1,0 +1,10 @@
+.venv
+--partition jag-standard
+--account=nlp
+--time 120:00:00
+--cpus-per-task 4
+--mem 64G
+--gres=gpu:1
+--constraint=48G
+--exclude=jagupard32
+--output /nlp/scr/nathu/slurm/%j.out

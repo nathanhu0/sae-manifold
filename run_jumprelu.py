@@ -1,22 +1,36 @@
-"""Train the manifold-SAE with a PURE-BINARY JumpReLU presence gate (canonical) on the
-small toy zoo (variants_per_type variants/type; independent p_active presence per manifold).
+"""THE CANONICAL TRAINER for the manifold-SAE: a sparse mixture of nonlinear manifold atoms
+(manifold_ae/manifold_sae.py) fit to the synthetic manifold zoo (manifold_ae/manifold_zoo.py).
 
-The gate thresholds the RAW gate pre-activation at 0 with a straight-through Heaviside
-(no sigmoid, no learned/annealed theta -- gpre>0 IS the boundary). The reconstruction uses
-the {0,1} mask DIRECTLY (active_i * dec_i): the gate only SELECTS, magnitude lives entirely
-in the decoder, so soft==hard by construction.
+Each atom = per-atom deep encoder -> r-dim latent + binary presence gate -> per-atom deep
+decoder; x_hat = b_dec + sum over ACTIVE atoms. The gate thresholds the raw pre-activation at
+0 with a straight-through Heaviside (gpre>0 IS the boundary; no sigmoid, no theta). The
+reconstruction uses the {0,1} mask DIRECTLY (active_i * dec_i): the gate only SELECTS, all
+magnitude lives in the decoder, so soft==hard by construction. With --learn-rank each atom
+also learns WHICH of its latent dims to use (a second gate on a static per-dim bias), so the
+effective rank of every atom emerges from the sparsity pressure.
 
     loss = MSE(x_hat, x)
-         + lambda(t) * mean_b sum_i rank_i * active_i      (rank-weighted L0; SUM over atoms)
-         + lam_preact * mean_b sum_i ReLU(-gpre_i)         (pre-act / dead-atom revival)
+         + lambda(t)   * mean_b sum_i rank_i * active_i    rank-weighted L0 ("dims are priced");
+                                                           --l0-rank-floor charges >=1 per firing
+                                                           atom so rank-0 atoms aren't free
+         + lam_atom(t) * mean_b sum_i active_i             per-ATOM count cost: breaks the tie
+                                                           between 1 rank-2k atom and 2 rank-k
+                                                           atoms -> consolidation / clean tilings
+         + lam_preact     * mean_b sum_i ReLU(-gpre_i)     presence-gate revival (dead atoms stay
+                                                           revivable; Conerly et al., simplified)
+         + lam_preact_dim * sum_(i,k)  ReLU(-dim_bias_ik)  per-dim rank revival (rule: lambda/30)
 
-lambda(t) is a single linear warmup 0 -> target over the whole run. The pre-act loss
-(Conerly et al., simplified) pushes non-firing pre-activations (gpre<0) up toward 0 so dead
-atoms stay revivable -- uniform, no decoder-norm weighting (the binary gate carries no
-magnitude). jump_eps is the STE bandwidth in pre-activation units.
+lambda(t), lam_atom(t): linear ramp 0 -> target over --lam-warmup-steps (default: whole run).
+--gate-grad picks the gate's backward estimator: rect (JumpReLU STE, window jump_eps) or
+sigmoid (exact-hard forward, sigmoid'(pre/(eps/4)) backward, nonzero everywhere).
 
-Run (jag): ebatch jump_lam02 slconf40s \
-  "PYTHONUNBUFFERED=1 PYTHONPATH=. python run_jumprelu.py --lam 0.02 --lam-preact 3e-4 --out-dir <d>"
+Best known recipe (the "gentle-lambda floor"; 48-manifold zoo, constant-L0=4 mixtures):
+  PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python run_jumprelu.py --steps 150000 --lr 3e-4 --lr-schedule warmup_cosine --lam 0.003 --lam-preact 3e-4 --lam-preact-dim 0.0001 --learn-rank --pool 8:64 --l0-rank-floor --l0 4 --variants-per-type 6 --eval-every 30000 --out-dir <run_dir>
+  (on SLURM: wrap in ebatch <name> slconf/slconf40s "<cmd>")
+
+Writes into --out-dir: ckpt.pt + the full eval suite (metrics.json, report.md, fvu_strip.png,
+triptych_<family>.png, tiling_<name>.png). Re-evaluate any checkpoint later with
+`python -m manifold_ae.eval_and_viz <run_dir>`; suite spec/smoke test: eval_smoke_test.py.
 """
 import argparse
 import math

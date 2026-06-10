@@ -1,0 +1,32 @@
+Manifold zoo. Table 4 summarizes the eight manifold types used in the synthetic benchmark.
+For each type, we list the intrinsic dimension di (the number of free parameters), the embedding
+dimension ki (the dimension of the ambient subspace containing the manifold, which determines
+the number of atoms needed for subspace capture), the parametric embedding γi, and the parameter
+ranges used across variants.
+Table 4: Manifold zoo used in the synthetic benchmark.Type di ki Embedding γi(θ) ∈ Rki Variant parametersCircle 1 2 (r cos θ, r sin θ) r ∈ {0.5, 0.75, 1.0, 1.5, 2.0, 3.0}Sphere 2 3 (r sin φ cos θ, r sin φ sin θ, r cos φ) r ∈ {0.5, 0.75, 1.0, 1.5, 2.0, 3.0}Torus 2 4 Clifford: ((R+r cos φ) cos θ, . . . , r sin φ) (R, r) ∈ {(2, 0.5), (2, 1), (3, 1), . . .}Möbius 2 3 ((1+t cos φ2 ) cos φ, . . . , t sin φ2 ) w ∈ {0.2, 0.3, 0.5, 0.7, 1.0, 1.5}Swiss roll 2 3 (θ cos θ, h, θ sin θ) (θmax, hmax) ∈ {(2π, 1.5), . . . , (4.5π, 6)}Helix 1 3 (r cos θ, r sin θ, αθ) α ∈ {0.1, 0.2, 0.3, 0.4, 0.5, 0.6}, r=1, 3 turns
+Flat disk 2 2 (r cos θ, r sin θ) with r ∼ pU (0, 1) R ∈ {0.5, 0.75, 1.0, 1.5, 2.0, 3.0}Segment 1 1 (t) length ∈ {0.5, 0.75, 1.0, 1.5, 2.0, 3.0}The distinction between di and ki is important throughout the paper. The intrinsic dimension digoverns the manifold’s degrees of freedom and determines the expected number of localized detectors
+in the tiling regime. The embedding dimension ki determines the number of atoms required for
+subspace capture (Definition 3): a circle is parameterized by a single angle (di = 1) but its embedding(cos θ, sin θ) lives in a 2-dimensional subspace (ki = 2), so two atoms are needed to span it. Similarly,
+the torus is intrinsically 2-dimensional but requires a 4-dimensional Clifford embedding to faithfully
+represent its topology.
+
+Normalization. A critical design choice is ensuring that all manifold instances contribute equally to
+the reconstruction loss. Without normalization, manifold types with large embeddings (e.g., the Swiss
+28roll, whose coordinates scale as θ ∼ 3π to 4.5π) would dominate the SAE’s capacity, while smallnorm manifolds (e.g., a circle with r = 0.5) would be treated as noise. We address this by centering
+and isotropically rescaling each instance at construction time. Concretely, for each manifold instancei with parameters ρi, we draw a calibration sample of 50,000 points from the raw embedding γi,
+compute the sample mean μi and the RMS norm of the centered samples σi = pE[∥γi(θ) − μi∥2],
+and define the normalized embedding as ̃γi(θ) = γi(θ) − μiσi. (12)
+This transformation is an isotropic rescaling composed with a translation: it preserves all angles,
+relative distances, curvature ratios, and topological structure. After normalization, every instance has
+RMS norm exactly 1 in local coordinates, regardless of manifold type or variant parameters.Ambient embedding. For each of the 48 manifold instances (8 types × 6 variants), we draw a
+random orthonormal matrix Vi ∈ Rki×d by sampling a d×ki Gaussian matrix and taking the Q factor
+of its QR decomposition (transposed to obtain orthonormal rows). This ensures that ∥zVi∥2 = ∥z∥2for all z: the ambient embedding is norm-preserving. The bias vectors bi are set to zero throughout
+(i.e., σbias = 0).Sparse mixture sampling. Observations follow the generative modelx = Xi∈S ̃γi(θi) Vi + ε, |S| = L0, (13)
+where the active set S is drawn uniformly at random (without replacement) from the 48 instances,
+intrinsic coordinates θi are sampled uniformly on each manifold, and ε ∼ N (0, σ2ε Id) with σε =
+10−5. The noise level is deliberately kept small so that reconstruction quality reflects the SAE’s
+geometric organization rather than denoising ability.
+We generate N = 2,000,000 training samples. The evaluation set consists of 1,000,000 samples
+generated at L0 = 4 with a separate random seed, along with the corresponding per-manifold
+contributions mi =  ̃γi(θi)Vi and active masks. This separation ensures that evaluation measures
+capture on in-distribution superposition with known ground truth.

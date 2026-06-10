@@ -25,3 +25,4 @@ results/
 # throwaway probes + session handoff (kept local, not committed)
 claude_scripts/
 LAST.md
+.commands_auto.sh

@@ -1,0 +1,9 @@
+.venv
+--partition sphinx
+--account=nlp
+--time 120:00:00
+--cpus-per-task 4
+--mem 128G
+--gres=gpu:1
+--constraint=80G
+--output /nlp/scr/nathu/slurm/%j.out

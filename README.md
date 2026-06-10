@@ -23,6 +23,41 @@ architecture (TopK, JumpReLU, Matryoshka, …) you can swap in your own class
 — the rest of the code only depends on three methods (`encode`, `decode`,
 decoder weight access).
 
+## Manifold-SAE (branch `manifold-sae`, research extension)
+
+This branch adds a *trained* generalization of SAEs in `manifold_ae/`: a sparse
+mixture of **manifold atoms**. Instead of a scalar feature, each dictionary atom
+is a small nonlinear autoencoder chart — per-atom deep encoder → r-dim latent,
+binary JumpReLU presence gate, per-atom deep decoder — and a sample's
+reconstruction is the sum of its few *active* atoms' outputs. It is trained and
+scored on a synthetic zoo of 48 known manifolds (8 families × 6 variants,
+embedded in random subspaces of R^256, presented as sparse L0=4 mixtures), so
+per-manifold capture is measurable against ground truth.
+
+- `manifold_ae/manifold_zoo.py` — the zoo + sparse-mixture generator
+  (`manifold_zoo_ref.txt` has the paper-style table of the 8 families)
+- `manifold_ae/manifold_sae.py` — the model: batched per-atom encoder/decoder
+  stacks, straight-through binary gates, learnable per-dim rank
+- `run_jumprelu.py` — **the canonical trainer**; its module docstring has the
+  recipe and flag guide
+- `manifold_ae/eval_and_viz.py` — the eval suite: per-run `report.md` with
+  capture metrics per manifold (best-single-atom / tiled-atlas / full-union
+  FVU), per-family triptychs, and per-atom tiling-atlas figures
+- `eval_smoke_test.py` — spec + smoke test of the suite ·
+  `reeval_campaign.py` — re-score a directory of runs
+
+Train (one GPU, ~4 h):
+
+```bash
+PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python run_jumprelu.py --steps 150000 --lr 3e-4 --lr-schedule warmup_cosine --lam 0.003 --lam-preact 3e-4 --lam-preact-dim 0.0001 --learn-rank --pool 8:64 --l0-rank-floor --l0 4 --variants-per-type 6 --eval-every 30000 --out-dir runs/example
+```
+
+Evaluate any checkpoint or run dir (writes `metrics.json` + `report.md` + figures):
+
+```bash
+PYTHONPATH=. uv run python -m manifold_ae.eval_and_viz runs/example
+```
+
 ## Quickstart
 
 ### 1. Extract manifold activations
