@@ -209,6 +209,7 @@ def _inmixture_capture(model, zoo, scale, dev, l0, p_active, thresh, n=4000):
         _, _, _, active, dec, _ = model.forward_jump(xt)                # active (n,N), dec (n,N,d)
     per_type = {}
     fvus = []
+    per_inst = {}
     for i, inst in enumerate(zoo.instances):
         sel = masks_t[:, i].bool()
         if int(sel.sum()) < 5:
@@ -219,10 +220,11 @@ def _inmixture_capture(model, zoo, scale, dev, l0, p_active, thresh, n=4000):
         fa = ((csel - ti.unsqueeze(1)) ** 2).sum(dim=(0, 2)) / den      # (N,) per-atom in-mixture aggregate FVU
         s = float(fa.min())
         fvus.append(s)
+        per_inst[inst.name] = s
         per_type.setdefault(inst.type, []).append(s)
     captured = sum(s < thresh for s in fvus)
     per_type_cap = {t: sum(s < thresh for s in ss) for t, ss in per_type.items()}
-    return captured, (float(np.mean(fvus)) if fvus else float("nan")), per_type_cap
+    return captured, (float(np.mean(fvus)) if fvus else float("nan")), per_type_cap, per_inst
 
 
 def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh=0.05,
@@ -366,8 +368,10 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
     # in-mixture (deployment) single-atom capture vs ground-truth contributions -- only for the full eval
     # (want_tri), not the cheap periodic one. Mildly more pessimistic than isolated (cross-talk).
     if want_tri:
-        inmix_captured, inmix_mean_fvu, inmix_per_type = _inmixture_capture(
+        inmix_captured, inmix_mean_fvu, inmix_per_type, inmix_per_inst = _inmixture_capture(
             model, zoo, scale, dev, l0_presence, p_active, thresh)
+        for r in rows:                                  # per-manifold deployment FVU next to the isolated ones
+            r["inmix_fvu"] = inmix_per_inst.get(r["name"], float("nan"))
     else:
         inmix_captured, inmix_mean_fvu, inmix_per_type = None, None, None
     # per-family CONTINUOUS aggregates (not just the discrete <thresh count): mean single/full FVU
@@ -530,5 +534,12 @@ if __name__ == "__main__":
     a = ap.parse_args()
     cpath = Path(a.ckpt); cpath = cpath / "ckpt.pt" if cpath.is_dir() else cpath
     model, zoo, scale, l0, ck = load_checkpoint(cpath, a.device)
+    # carry the ckpt's training hyperparams into metrics.json (same provenance the trainer's own
+    # inline eval writes) so re-evals don't strip lam/lam_atom/... from downstream aggregation.
+    extra = {k: ck[k] for k in ["lam", "lam_preact", "jump_eps", "lr", "lr_schedule",
+                                "lam_warmup_steps", "lam_decorr", "learn_rank", "lam_preact_dim",
+                                "l0", "lam_atom", "l0_rank_floor", "gate_grad", "seed",
+                                "variants_per_type", "pool"] if k in ck}
     eval_and_viz(model, zoo, scale, a.out_dir or cpath.parent,
-                 p_active=(None if l0 is not None else ck.get("p_active", 0.25)), l0=l0)
+                 p_active=(None if l0 is not None else ck.get("p_active", 0.25)), l0=l0,
+                 extra=extra)
