@@ -90,16 +90,16 @@ class ManifoldSAE(nn.Module):
             rmask[i, :r] = 1.0
         self.register_buffer("rank_mask", rmask)
 
-        e1, e2, e3 = enc_dims
-        self.enc1 = BatchedLinear(N, d_model, e1)
-        self.enc2 = BatchedLinear(N, e1, e2)
-        self.enc3 = BatchedLinear(N, e2, e3)
-        self.coord = BatchedLinear(N, e3, self.max_rank)
-        self.gate = BatchedLinear(N, e3, 1)
-        self.dec1 = BatchedLinear(N, self.max_rank, e3)
-        self.dec2 = BatchedLinear(N, e3, e2)
-        self.dec3 = BatchedLinear(N, e2, e1)
-        self.dec4 = BatchedLinear(N, e1, d_model)
+        # VARIABLE-DEPTH funnel: enc_dims is any length >= 1 (e.g. (128,64,32) classic;
+        # (128,64,32,32) adds a layer at the NARROW end). Decoder mirrors it.
+        dims = [d_model] + list(enc_dims)
+        self.encs = nn.ModuleList(BatchedLinear(N, dims[i], dims[i + 1])
+                                  for i in range(len(enc_dims)))
+        self.coord = BatchedLinear(N, dims[-1], self.max_rank)
+        self.gate = BatchedLinear(N, dims[-1], 1)
+        rdims = [self.max_rank] + list(reversed(list(enc_dims))) + [d_model]
+        self.decs = nn.ModuleList(BatchedLinear(N, rdims[i], rdims[i + 1])
+                                  for i in range(len(rdims) - 1))
         self.b_dec = nn.Parameter(torch.zeros(d_model))
         # JumpReLU STE bandwidth, in RAW pre-activation units (gpre>0 is the gate boundary).
         self.jump_eps = jump_eps
@@ -142,18 +142,18 @@ class ManifoldSAE(nn.Module):
         return self.ranks.float()
 
     def encode(self, x):
-        h = F.gelu(self.enc1(x))
-        h = F.gelu(self.enc2(h))
-        h = F.gelu(self.enc3(h))                      # (B, N, e3)
+        h = x
+        for lin in self.encs:
+            h = F.gelu(lin(h))                        # (B, N, enc_dims[-1])
         z = self.coord(h) * self.rank_gate()          # (B, N, max_rank), masked to (learned) rank
         gpre = self.gate(h).squeeze(-1)               # (B, N) RAW gate pre-activation (no sigmoid)
         return z, gpre
 
     def decode_all(self, z):
-        h = F.gelu(self.dec1(z))
-        h = F.gelu(self.dec2(h))
-        h = F.gelu(self.dec3(h))
-        return self.dec4(h)                           # (B, N, d_model)
+        h = z
+        for lin in self.decs[:-1]:
+            h = F.gelu(lin(h))
+        return self.decs[-1](h)                       # (B, N, d_model)
 
     def forward_jump(self, x):
         """Canonical pure-binary JumpReLU gate: threshold the RAW gate pre-activation at 0

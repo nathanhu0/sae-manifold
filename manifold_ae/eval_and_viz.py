@@ -610,7 +610,14 @@ def load_checkpoint(ckpt_path, device="cpu"):
     from manifold_ae.manifold_zoo import ManifoldZoo
     from manifold_ae.manifold_sae import ManifoldSAE
     ck = torch.load(ckpt_path, map_location=device)
-    d_model = int(ck["state_dict"]["enc1.weight"].shape[2])
+    sd = ck["state_dict"]
+    if "enc1.weight" in sd:        # legacy fixed-depth naming -> variable-depth ModuleList names
+        ren = {"enc1": "encs.0", "enc2": "encs.1", "enc3": "encs.2",
+               "dec1": "decs.0", "dec2": "decs.1", "dec3": "decs.2", "dec4": "decs.3"}
+        sd = {(ren[k.split(".", 1)[0]] + "." + k.split(".", 1)[1]
+               if k.split(".", 1)[0] in ren else k): v for k, v in sd.items()}
+        ck["state_dict"] = sd
+    d_model = int(sd["encs.0.weight"].shape[2])
     m = ManifoldSAE(d_model=d_model, rank_dist=ck["pool"], enc_dims=ck["enc_dims"],
                     jump_eps=ck["jump_eps"], learn_rank=ck["learn_rank"],
                     gate_grad=ck.get("gate_grad", "rect")).to(device)
