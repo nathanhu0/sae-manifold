@@ -243,6 +243,7 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         xh, z, gpre, active, dec, l0_rank = model.forward_jump(xt)
         fvu_mix = (((xh - xt) ** 2).sum() / (xt ** 2).sum()).item()
         firing_frac_mix = active.float().mean(0).cpu().numpy()   # per-atom fraction of mixture samples it fires on
+        atoms_per_sample = float(active.sum(1).float().mean())   # MODEL atoms firing/sample (NOT the data's active_count)
     act_count = masks.sum(1)
     gmask = model.rank_gate().detach()                     # (N, max_rank) {0,1} on-dim mask (learned or fixed)
     atom_rank_vec = gmask.sum(-1).cpu()                    # per-atom rank = on-dim count (NEVER max_rank)
@@ -388,6 +389,7 @@ def compute_capture(model, zoo, scale, p_active=0.25, n=6000, n_iso=2000, thresh
         atoms_per_manifold=float(np.mean([r["n_atoms_used"] for r in rs])),
         mean_rank=float(np.mean([r["best_rank"] for r in rs]))) for t, rs in fam.items()}
     res = dict(fvu=fvu_mix, act_rank=float(l0_rank.mean()), n_inst=len(rows),
+               atoms_per_sample_mean=atoms_per_sample,
                active_count_mean=float(act_count.mean()), active_count_std=float(act_count.std()),
                dead_atoms=int((firing_frac_mix < 1e-3).sum()),   # firing-fraction floor (strict ==0 was n/seed-unstable)
                captured_single=sum(m["single"] < thresh for m in rows),
@@ -422,6 +424,7 @@ def _report_md(res, tri_paths, tiling_paths, out, thresh):
     L += [f"| {k} | {v} |" for k, v in [
         ("mixture FVU", f"{res['fvu']:.4f}"),
         ("active rank-dof / sample", f"{res['act_rank']:.1f}"),
+        ("atoms firing / sample", f"{res['atoms_per_sample_mean']:.1f}"),
         ("dead atoms", res["dead_atoms"]),
         (f"captured single @{thresh:g}", f"{res['captured_single']}/{N}"),
         (f"captured tiled @{thresh:g}", f"{res['captured_tiled']}/{N} "
