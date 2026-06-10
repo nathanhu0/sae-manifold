@@ -20,6 +20,7 @@ Usage:
   uv run data.py --manifold colors # extract a single manifold
 """
 import json
+import os
 import colorsys
 from pathlib import Path
 
@@ -33,7 +34,9 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 LAYER = 19
 D_MODEL = 4096
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CACHE_DIR = Path(__file__).parent / "cache"
+# Large outputs go to scratch (override with MANIFOLD_CACHE_DIR).
+CACHE_DIR = Path(os.environ.get("MANIFOLD_CACHE_DIR",
+                                "/nlp/scr/nathu/sae-manifold/cache"))
 
 
 def mpl_colorscale(name, n=11):
@@ -153,7 +156,7 @@ def build_formality():
 def build_sent_length():
     """WikiText sentences labeled by whitespace token count (3-80)."""
     from datasets import load_dataset
-    ds = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
+    ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
     prompts, labels = [], []
     seen = set()
     for row in ds:

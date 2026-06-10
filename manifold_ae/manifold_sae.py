@@ -57,36 +57,6 @@ def preact_revival(pre):
     return torch.relu(-pre)
 
 
-# --- SET ASIDE (commented out while focusing on the binary pre-activation JumpReLU gate) ---
-# Leaky-hard-sigmoid STEs for the SPD causal-importance gate (used by forward_clamp, also
-# parked below). Kept verbatim for reference.
-#
-# class LowerLeakyHardSigmoid(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, z, alpha):
-#         ctx.save_for_backward(z); ctx.alpha = alpha
-#         return z.clamp(0.0, 1.0)
-#     @staticmethod
-#     def backward(ctx, g):
-#         (z,) = ctx.saved_tensors
-#         grad = g * ((z > 0) & (z < 1)).to(z.dtype)
-#         grad = grad + ctx.alpha * g * ((z <= 0) & (g < 0)).to(z.dtype)   # revive, neg-grad only
-#         return grad, None
-#
-# class UpperLeakyHardSigmoid(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, z, alpha):
-#         ctx.save_for_backward(z); ctx.alpha = alpha
-#         return z.clamp(0.0, 1.0)
-#     @staticmethod
-#     def backward(ctx, g):
-#         (z,) = ctx.saved_tensors
-#         grad = g * ((z > 0) & (z < 1)).to(z.dtype)
-#         grad = grad + ctx.alpha * g * (z >= 1).to(z.dtype)
-#         return grad, None
-# -------------------------------------------------------------------------------------------
-
-
 class BatchedLinear(nn.Module):
     """N independent affine maps in_f->out_f. Input (B, in_f) [shared] or
     (B, N, in_f); output always (B, N, out_f)."""
@@ -167,29 +137,6 @@ class ManifoldSAE(nn.Module):
         h = F.gelu(self.dec3(h))
         return self.dec4(h)                           # (B, N, d_model)
 
-    # --- SET ASIDE (hard rank-budget TopK + sigmoid-presence JumpReLU) ---
-    # These assume the OLD sigmoid-presence encode() contract and are unused by the binary
-    # gate below; commented out while we focus on the one mechanism. Verbatim for reference:
-    #
-    # def select(self, g, R):  # rank-budgeted TopK: highest-presence atoms until sum rank >= R
-    #     order = g.argsort(dim=-1, descending=True)
-    #     sorted_ranks = self.ranks[order].float()
-    #     start = sorted_ranks.cumsum(-1) - sorted_ranks
-    #     active_sorted = (start < R).float()
-    #     return torch.zeros_like(g).scatter_(-1, order, active_sorted)
-    #
-    # def forward(self, x, R=None):                      # hard rank-budget TopK forward (g*dec)
-    #     R = self.R_target if R is None else R
-    #     z, g = self.encode(x - self.b_dec)
-    #     gate = g * self.select(g, R)
-    #     x_hat = (gate.unsqueeze(-1) * self.decode_all(z)).sum(dim=1) + self.b_dec
-    #     return x_hat, z, gate
-    #
-    # def select_jumprelu(self, g, theta=None):          # sigmoid-presence + learned/annealed theta
-    #     if theta is None: theta = torch.sigmoid(self.theta_raw)
-    #     return STEHeaviside.apply(g - theta, self.jump_eps)
-    # ----------------------------------------------------------------------
-
     def forward_jump(self, x):
         """Canonical pure-binary JumpReLU gate: threshold the RAW gate pre-activation at 0
         with a straight-through Heaviside (bandwidth jump_eps, in pre-activation units).
@@ -205,37 +152,14 @@ class ManifoldSAE(nn.Module):
         l0 = (active * self.atom_ranks()).sum(dim=-1)      # (B,) rank-weighted dof (learned rank if on)
         return x_hat, z, gpre, active, dec, l0
 
-    # --- SET ASIDE (implicit-k sigmoid lasso, and SPD leaky-hard-sigmoid) ---
-    # Both assume the OLD sigmoid-presence / tau encode() contract or the leaky STEs above;
-    # unused by the binary gate. Commented out for focus; verbatim for reference:
-    #
-    # def forward_soft(self, x, tau=1.0):                # implicit-k: g=sigmoid(a/tau), lasso on ||g*dec||
-    #     z, g = self.encode(x - self.b_dec, tau=tau)
-    #     contrib = g.unsqueeze(-1) * self.decode_all(z)
-    #     x_hat = contrib.sum(dim=1) + self.b_dec
-    #     return x_hat, z, g, contrib.norm(dim=-1)
-    #
-    # def forward_clamp(self, x, alpha=0.01):            # SPD leaky-hard-sigmoid gate
-    #     h = F.gelu(self.enc3(F.gelu(self.enc2(F.gelu(self.enc1(x - self.b_dec))))))
-    #     zc = self.coord(h) * self.rank_mask
-    #     zg = self.gate(h).squeeze(-1)
-    #     dec = self.decode_all(zc)
-    #     g_rec = LowerLeakyHardSigmoid.apply(zg, alpha); g_pen = UpperLeakyHardSigmoid.apply(zg, alpha)
-    #     x_hat = (g_rec.unsqueeze(-1) * dec).sum(dim=1) + self.b_dec
-    #     return x_hat, zc, g_rec, (g_pen.unsqueeze(-1) * dec).norm(dim=-1)
-    # ------------------------------------------------------------------------
-
     def n_params(self):
         return sum(p.numel() for p in self.parameters())
 
 
 if __name__ == "__main__":
-    m = ManifoldSAE()
-    x = torch.randn(16, 4096)
-    for R in (m.full_R, 200, 100):
-        xh, z, gate = m(x, R=R)
-        active = (gate > 0)
-        used_rank = (active.float() * m.ranks.float()).sum(1).mean()
-        print(f"R={R:>3}  params={m.n_params()/1e6:.0f}M  x_hat={tuple(xh.shape)}  "
-              f"atoms/sample={active.sum(1).float().mean():.1f}  "
-              f"rank-used/sample={used_rank:.1f}")
+    m = ManifoldSAE(d_model=64, rank_dist={4: 32}, enc_dims=(128, 64, 32), learn_rank=True)
+    x = torch.randn(16, 64)
+    x_hat, z, gpre, active, dec, l0 = m.forward_jump(x)
+    print(f"params={m.n_params()/1e6:.1f}M  x_hat={tuple(x_hat.shape)}  "
+          f"atoms/sample={active.sum(1).float().mean():.1f}  "
+          f"rank-dof/sample={l0.mean():.1f}")
