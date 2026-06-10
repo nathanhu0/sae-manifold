@@ -16,15 +16,19 @@ are the corrected ones**; the old per-sample numbers are preserved in each run's
    `Σ‖r‖²/Σ‖x‖²`. Re-evaluated all 61 ckpts on GPU: e.g. the lrsweep `k8_lr3e-4` cell went
    single 28→**36**, full 32→**48**; `stage2 k8_lam0.003_rev2x` single 28→**44**. The campaign
    captured far more than originally reported.
-2. **Single-atom metric is a strict DEDICATION metric (commit fec3b90).** `single<thresh` asks
-   "does ONE atom span the WHOLE manifold," NOT "is this manifold modeled." A clean 2-chart **tiling**
-   (e.g. `segment_0`: two atoms each near-perfect on disjoint θ-halves, cond-FVU ~0.001, union FVU
-   0.014) scores the same `single`≈0.49 as a genuinely **broken split** (`flat_disk_1`: atoms bad
-   even where they fire, cond-FVU 0.42). Now we additionally report **`tiled`** (clean local-chart
-   capture: single OR union-good-and-dominant-atom-is-a-clean-chart) and **`full`** (union), plus
-   per-atom conditional FVU. The metric was also made reproducible (per-instance rng; per-instance
-   FVUs were order/`n`-dependent before, max|Δ|=1.8e-2 → 0) and given provenance + a stable
-   firing-floor dead-atom count.
+2. **Standardized to TWO capture metrics: `single` and `tiled` (commits fec3b90, d90ffe5).**
+   - **single** = one atom spans the WHOLE manifold (`single<thresh`) — strict dedication.
+   - **tiled** = captured by a clean **one-chart-at-a-time atlas**: `single<thresh` OR
+     (`full<thresh` AND `frac_overlap<0.05`), where `frac_overlap` = fraction of the manifold's
+     samples on which ≥2 atoms fire simultaneously. So `single ⊆ tiled`; the extra credit is for
+     **disjoint** multi-chart covers, and we also track **how many charts** each tiling needs
+     (`tiled_charts_hist`). `full` (union) is kept only as a secondary diagnostic.
+   This rejects **redundant overlap** (`flat_disk_1`: two atoms both firing ~80%, overlap 0.60 → they
+   ADD, not tile → NOT tiled) while crediting clean tilings (`segment_0`: two θ-half-charts, overlap
+   0.00, 2 charts → tiled). Key consequence: **genuine disjoint tilings are RARE** — on the floor
+   winner tiled is only 39 (= single 38 + segment_0), so the single→full gap (38→45) is **mostly
+   redundant overlap, not atlases**. Metric also made reproducible (per-instance rng; FVUs were
+   order/`n`-dependent, max|Δ|1.8e-2 → 0) + provenance + stable firing-floor dead count.
 3. **λ never reached target (training-config).** Every campaign run left `--lam-warmup-steps`
    unset → λ ramped 0→target over the **whole** 150k run, hitting target only at the final step as
    the cosine LR decayed to ~0. **The runs never actually trained AT their nominal λ.** A fix grid
@@ -44,15 +48,17 @@ rule (presence `lam_preact=3e-4`; per-dim `lam_preact_dim ≈ λ/30 = 0.8·λ·L
 rule ×1/×2).
 
 ## TL;DR (corrected)
-- **Three capture lenses now:** `single` (strict: one atom spans the whole manifold) ≤ `tiled`
-  (clean local charts) ≤ `full` (any union). The gap is the tiled/split manifolds.
-- **Most rank-efficient operating point:** floor `k8/lr3e-4/λ0.003/1×` → **single 38, tiled 40,
-  full 45** at **act_rank 8.3**, FVU 0.025, dead 14. Still the cleanest low-rank cell.
-- **Most clean-chart capture at low rank:** `atomcost k8/lamatom0.01` → **tiled 46, full 46** at
-  act_rank 8.8, **mean_cond 0.003** — the per-atom penalty already consolidates splits (validates
-  the anti-split training fix).
-- **Peak raw capture:** `stage2(lr1e-3) k8/λ0.003/2×` → **single 44, tiled 45, full 47** — but at
-  **act_rank 15.4** (≈2× the floor's rank). Higher preact (2×) buys capture by spending rank.
+- **Two standard metrics:** `single` (one atom spans the whole manifold) ⊆ `tiled` (clean
+  one-chart-at-a-time atlas; also tracks #charts). `full` (union) kept only as a diagnostic.
+- **Clean disjoint tilings are RARE — `lam_atom` is the only lever that makes them.** `atomcost
+  k8/lamatom0.01` → single 38, **tiled 46, full 46** (zero overlap-only) at act_rank 8.8. Everywhere
+  else tiled ≈ single and the union captures are redundant overlap (floor: tiled 39 vs full 45).
+- **Most rank-efficient clean cell:** floor `k8/lr3e-4/λ0.003/1×` → **single 38, tiled 39, full 45**
+  at **act_rank 8.3**, FVU 0.025, dead 14.
+- **Peak raw capture:** `stage2(lr1e-3) k8/λ0.003/2×` → **single 44, tiled 45** — but at **act_rank
+  15.4** (≈2× the floor's rank). Higher preact (2×) buys capture by spending rank.
+- **λ-hold fix REFUTED** (`floorhold`): holding λ=0.003 over-prunes (single 38→20-31). The gentle ramp
+  was beneficial; use `lam_atom` on the gentle recipe, not a hold.
 - **"lr3e-4 ≫ lr1e-3" is OVERTURNED:** corrected, lr1e-3 single 39 ≳ lr3e-4 36, and lr1e-3's best
   cell (44/45/47) tops lr3e-4's best (37/43/47). lr3e-4 still wins on `full` (48 vs 33 at the
   lrsweep cells) and rank-efficiency; the two are close, not a blowout.
@@ -101,11 +107,19 @@ winner (act_rank 8.3, FVU 0.025, single 38) spends ~1.4× the oracle rank, ~3.5�
 K8/lr3e-4/λ0.003, 150k→300k→600k: single 36→38→34, full 48→41→41 (flat / noisy). 4× the data finds
 no more dedicated atoms — the bottleneck is optimization/config (λ-hold), not data.
 
-## 6. Per-atom count penalty (`--lam-atom`) — NOW looks strong under the corrected metric
-`atomcost k8_lamatom0.01`: single 38, **tiled 46, full 46, mean_cond 0.003** at act_rank 8.8 — i.e.
-the rank-independent per-atom cost consolidates splits into clean single-atom charts, which the
-old per-sample metric completely hid (it read this cell as single 29). This directly motivates the
-anti-split training fix (lam_atom / lam_decorr in `floorhold`).
+## 6. Per-atom count penalty (`--lam-atom`) — the ONLY lever that yields clean disjoint tilings
+Under the strict one-at-a-time `tiled` metric, **`atomcost k8_lamatom0.01` = single 38, tiled 46,
+full 46** (act_rank 8.8, mean_cond 0.003). tiled == full means **zero overlap-only captures** — every
+captured manifold is a clean atlas. Contrast the floor winner (single 38, **tiled 39**, full 45: 6 of
+its captures are redundant overlap) and lr3e-4 (single 36, tiled 36, full 48: all 12 extra are overlap).
+So `lam_atom` doesn't merely consolidate to single atoms — it makes the multi-atom captures **disjoint**
+(charts that tile, not atoms that sum). The old per-sample metric hid this entirely (read this cell as
+single 29). **This is the strongest lever found; `lam_atom` on the gentle-λ floor is the top next experiment.**
+
+**`floorhold` (λ-hold fix) — NEGATIVE.** Holding λ=0.003 (`--lam-warmup-steps 50000`) HURT on every lens
+(single 38→20-31, tiled 40→27-36, full 45→37): sustained λ over-prunes; the gentle ramp's lower
+effective-λ was beneficial. `lam_atom` helped *within* the hold (base→atom: single 20→31) but couldn't
+overcome it. The λ-never-held root-cause hypothesis is REFUTED. → use lam_atom on the GENTLE recipe (no hold).
 
 ## 7. Rank-0 floor fix (`--l0-rank-floor`) — adopted; the floor grid is the canonical recipe
 Charges ≥1 per firing atom so always-on rank-0 "bias" atoms (a free-rider loophole) get gated down.
