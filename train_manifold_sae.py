@@ -16,9 +16,9 @@ effective rank of every atom emerges from the sparsity pressure.
          + lam_atom(t) * mean_b sum_i active_i             per-ATOM count cost: breaks the tie
                                                            between 1 rank-2k atom and 2 rank-k
                                                            atoms -> consolidation / clean tilings
-         + lam_preact     * mean_b sum_i ReLU(-gpre_i)     presence-gate revival (dead atoms stay
+         + lam_preact     * mean_b sum_i ReLU(-gpre_i)     presence-gate REACTIVATING loss (dead atoms stay
                                                            revivable; Conerly et al., simplified)
-         + lam_preact_dim * sum_(i,k)  ReLU(-dim_bias_ik)  per-dim rank revival (rule: lambda/30)
+         + lam_preact_dim * sum_(i,k)  ReLU(-dim_bias_ik)  per-dim rank reactivating loss (rule: lambda/30)
 
 lambda(t), lam_atom(t): linear ramp 0 -> target over --lam-warmup-steps (default: whole run).
 --gate-grad picks the gate's backward estimator: rect (JumpReLU STE, window jump_eps) or
@@ -40,7 +40,7 @@ import numpy as np
 import torch
 
 from manifold_ae.manifold_zoo import ManifoldZoo
-from manifold_ae.manifold_sae import ManifoldSAE, preact_revival
+from manifold_ae.manifold_sae import ManifoldSAE, reactivating_loss
 from manifold_ae.eval_and_viz import eval_and_viz, compute_capture
 
 POOL = {1: 16, 2: 16, 3: 16, 4: 16}     # 64 atoms (4x oracle's 16; ample per-rank capacity, no rank-1 starvation)
@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--lam-decorr", type=float, default=0.0)       # off-diag activation-correlation penalty (ramped like lambda)
     ap.add_argument("--learn-rank", action="store_true")           # learn per-dim rank (pool rank = MAX); else fixed pool
     ap.add_argument("--pool", default="1:16,2:16,3:16,4:16")       # "rank:count,..." ; learn-rank -> homogeneous e.g. "4:32"
-    ap.add_argument("--lam-preact-dim", type=float, default=0.0)   # per-dim gate revival (learn-rank): keeps pruned dims revivable
+    ap.add_argument("--lam-preact-dim", type=float, default=0.0)   # per-dim gate reactivating loss (learn-rank): keeps pruned dims reachable
     ap.add_argument("--lam-atom", type=float, default=0.0)         # per-ATOM count cost (rank-independent): favor 1 higher-dim atom over a spanning split
     ap.add_argument("--l0-rank-floor", action="store_true")        # charge >=1 per FIRING atom (rank-0 atoms cost 0 otherwise -> free always-on bias atoms)
     ap.add_argument("--gate-grad", choices=["rect", "sigmoid"], default="rect")  # gate backward: rect STE vs sigmoid' surrogate (both gate levels)
@@ -116,7 +116,7 @@ def main():
         # pre-act / dead-atom loss: push non-firing pre-activations (gpre < 0) up toward the
         # boundary (0) so dead atoms stay revivable. Uniform (no decoder-norm weighting): the
         # binary gate carries no magnitude, so the reparam-invariance reason for it is gone.
-        preact = preact_revival(gpre).sum(-1).mean()    # HIGH-level gate revival (shared helper)
+        preact = reactivating_loss(gpre).sum(-1).mean()    # HIGH-level gate reactivating loss (shared helper)
         # decorrelation: push off-diagonal activation CORRELATION toward 0. Under independent
         # p_active, the dedicated (one-atom-per-manifold) code is the independent one, so this is
         # minimized at dedication; it bites only the within-manifold spanning splits (co-firing
@@ -143,10 +143,10 @@ def main():
             # per active atom breaks the tie toward ONE higher-dim atom vs a spanning split. Ramped like lam.
             loss = loss + a.lam_atom * min(1.0, step / lam_warmup) * active.sum(-1).float().mean()
         if a.learn_rank and a.lam_preact_dim > 0:
-            # per-dim revival: constant upward push on pruned dim-biases (bias<0) so a dim driven
+            # per-dim reactivating loss: constant upward push on pruned dim-biases (bias<0) so a dim driven
             # below the STE window stays revivable instead of freezing off forever. Analog of the
             # presence-gate preact, one level down. Constant (not ramped): a revivability floor.
-            loss = loss + a.lam_preact_dim * preact_revival(m.dim_bias).sum()  # LOW-level gate revival (same helper)
+            loss = loss + a.lam_preact_dim * reactivating_loss(m.dim_bias).sum()  # LOW-level gate reactivating loss (same helper)
         opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); sched.step()
         if step % 2000 == 0 or step == a.steps - 1:
             print(f"step {step:>6} recon={recon.item():.4f} "

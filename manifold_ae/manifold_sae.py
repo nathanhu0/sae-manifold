@@ -47,13 +47,14 @@ class STEHeaviside(torch.autograd.Function):
         return grad_out * pseudo, None
 
 
-def preact_revival(pre):
-    """Revival / dead-component aux loss, shared by BOTH gate levels (presence gpre and per-dim
-    rank dim_bias) -- the committed companion to STEHeaviside: every gate pre-activation gets a
-    Heaviside forward + this revival. Pushes any pre-activation that has gone negative back up
-    toward the gate boundary (0) so a component driven off stays revivable instead of freezing
-    past the STE window. Returns the per-element penalty relu(-pre); the caller applies its own
-    reduction (presence: sum over atoms then mean over batch; per-dim: sum over the static (N,K))."""
+def reactivating_loss(pre):
+    """REACTIVATING loss (dead-component aux loss; see TERMINOLOGY.md), shared by BOTH gate
+    levels (presence gpre and per-dim rank dim_bias) -- the committed companion to STEHeaviside:
+    every gate pre-activation gets a Heaviside forward + this loss. Pushes any pre-activation
+    that has gone negative back up toward the gate boundary (0) so a switched-off component
+    stays reachable by gradient instead of freezing past the STE window. Returns the per-element
+    penalty relu(-pre); the caller applies its own reduction (presence: sum over atoms then mean
+    over batch; per-dim: sum over the static (N,K))."""
     return torch.relu(-pre)
 
 
@@ -104,7 +105,7 @@ class ManifoldSAE(nn.Module):
         self.jump_eps = jump_eps
         # gate_grad: backward estimator for BOTH gate levels (presence + learn-rank dim bias).
         # "rect" = rectangular STE of width jump_eps; "sigmoid" = sigmoid' surrogate (forward
-        # stays exact-hard), nonzero EVERYWHERE -- candidate to replace the revival losses.
+        # stays exact-hard), nonzero EVERYWHERE -- candidate to replace the reactivating losses.
         assert gate_grad in ("rect", "sigmoid")
         self.gate_grad = gate_grad
         # learn_rank: each atom learns WHICH of its max_rank latent dims to use, via a static
@@ -120,7 +121,7 @@ class ManifoldSAE(nn.Module):
         backward depends on gate_grad: rect = rectangular pseudo-gradient of width jump_eps
         (zero outside the window); sigmoid = sigmoid'(pre/T) with T = jump_eps/4 (matches the
         rect's peak gradient 1/eps at the boundary) -- nonzero everywhere, so components driven
-        far negative keep receiving gradient without a revival loss."""
+        far negative keep receiving gradient without a reactivating loss."""
         if self.gate_grad == "sigmoid":
             s = torch.sigmoid(pre / (self.jump_eps / 4))
             return (pre > 0).to(pre.dtype) + s - s.detach()
