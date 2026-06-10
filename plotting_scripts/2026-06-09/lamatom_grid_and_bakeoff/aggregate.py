@@ -263,6 +263,26 @@ def rank_vs_fvu(rows):
     fig.savefig(OUT_DIR / "rank_vs_fvu_best.png", dpi=150); plt.close(fig)
 
 
+def recon_vs_lamatom(rows):
+    """The per-atom penalty's direct cost: reconstruction vs lam_atom, one line per lambda row.
+    Left: mixture FVU (deployment reconstruction). Right: mean per-manifold single-atom FVU
+    (dedication quality, continuous)."""
+    grid = [r for r in rows if r["group"] in ("grid", "baseline") and r["learn_rank"]]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
+    for ax, key, title in [(axes[0], "fvu", "mixture FVU (reconstruction)"),
+                           (axes[1], "mean_single_fvu", "mean single-atom FVU (dedication quality)")]:
+        for lam in sorted({r["lam"] for r in grid}):
+            rs = sorted([r for r in grid if r["lam"] == lam], key=lambda r: r["lam_atom"])
+            x = [max(r["lam_atom"], 2e-5) for r in rs]
+            ax.plot(x, [r[key] for r in rs], "o-", color=LAM_COLORS.get(lam, "k"), label=f"lambda={lam}")
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlabel("lam_atom (log; 0 at left edge)"); ax.set_ylabel("FVU (log)")
+        ax.set_title(title, fontsize=10); ax.grid(alpha=0.25)
+    axes[0].legend(fontsize=9)
+    fig.suptitle("Reconstruction cost of the per-atom penalty", fontsize=13)
+    fig.tight_layout(); fig.savefig(OUT_DIR / "recon_vs_lamatom.png", dpi=150); plt.close(fig)
+
+
 def side_tables(rows):
     for group, fname in [("bakeoff", "bakeoff.md"), ("fixedpool", "fixedpool.md")]:
         rs = [r for r in rows if r["group"] == group] + [r for r in rows if r["group"] == "baseline"]
@@ -283,6 +303,7 @@ def main():
     paretos(rows)
     fvu_ecdf(rows)
     per_family(rows)
+    recon_vs_lamatom(rows)
     side_tables(rows)
     # NB the cutoff-free rank-vs-FVU view is a PER-RUN figure now (rank_vs_fvu.png in each run
     # dir, built by eval_and_viz._rank_fvu_fig); the aggregation links the best runs' reports.
