@@ -639,7 +639,8 @@ def load_checkpoint(ckpt_path, device="cpu"):
     d_model = int(sd["encs.0.weight"].shape[2])
     m = ManifoldSAE(d_model=d_model, rank_dist=ck["pool"], enc_dims=ck["enc_dims"],
                     jump_eps=ck["jump_eps"], learn_rank=ck["learn_rank"],
-                    gate_grad=ck.get("gate_grad", "rect")).to(device)
+                    gate_grad=ck.get("gate_grad", "rect"),
+                    residual=ck.get("residual", False)).to(device)
     m.load_state_dict(ck["state_dict"]); m.eval()
     zoo = ManifoldZoo(d=d_model, seed=0, variants_per_type=ck["variants_per_type"])
     return m, zoo, ck["scale"], ck.get("l0", None), ck

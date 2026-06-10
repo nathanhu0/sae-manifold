@@ -76,7 +76,7 @@ class BatchedLinear(nn.Module):
 class ManifoldSAE(nn.Module):
     def __init__(self, d_model=4096, rank_dist=None, R_target=100,
                  enc_dims=(256, 128, 64), jump_eps=2.0, learn_rank=False,
-                 gate_grad="rect"):
+                 gate_grad="rect", residual=False):
         super().__init__()
         rank_dist = rank_dist or {1: 128, 2: 64, 3: 32, 4: 16}
         ranks = [r for r, c in sorted(rank_dist.items()) for _ in range(c)]
@@ -101,6 +101,9 @@ class ManifoldSAE(nn.Module):
         self.decs = nn.ModuleList(BatchedLinear(N, rdims[i], rdims[i + 1])
                                   for i in range(len(rdims) - 1))
         self.b_dec = nn.Parameter(torch.zeros(d_model))
+        # residual: skip connections inside the funnel wherever consecutive widths match
+        # (h = GELU(W h) + h) -- supports deep winding stacks like (16, 32,32,32).
+        self.residual = residual
         # JumpReLU STE bandwidth, in RAW pre-activation units (gpre>0 is the gate boundary).
         self.jump_eps = jump_eps
         # gate_grad: backward estimator for BOTH gate levels (presence + learn-rank dim bias).
@@ -141,10 +144,16 @@ class ManifoldSAE(nn.Module):
             return self.rank_gate().sum(-1)
         return self.ranks.float()
 
+    def _step(self, lin, h):
+        h2 = F.gelu(lin(h))
+        if self.residual and h2.shape == h.shape:
+            h2 = h2 + h
+        return h2
+
     def encode(self, x):
         h = x
         for lin in self.encs:
-            h = F.gelu(lin(h))                        # (B, N, enc_dims[-1])
+            h = self._step(lin, h)                    # (B, N, enc_dims[-1])
         z = self.coord(h) * self.rank_gate()          # (B, N, max_rank), masked to (learned) rank
         gpre = self.gate(h).squeeze(-1)               # (B, N) RAW gate pre-activation (no sigmoid)
         return z, gpre
@@ -152,7 +161,7 @@ class ManifoldSAE(nn.Module):
     def decode_all(self, z):
         h = z
         for lin in self.decs[:-1]:
-            h = F.gelu(lin(h))
+            h = self._step(lin, h)
         return self.decs[-1](h)                       # (B, N, d_model)
 
     def forward_jump(self, x):
