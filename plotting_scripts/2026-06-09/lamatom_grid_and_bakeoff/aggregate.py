@@ -147,15 +147,6 @@ def paretos(rows):
     row's curve, never an axis."""
     panes = [("atoms", "atoms firing / sample (measured)", True),
              ("act_rank", "total active rank-dof / sample (measured)", False)]
-    # star = per lambda row, the run closest to the GROUND-TRUTH operating point atoms/sample = 4.
-    # Same runs starred in BOTH panes: if the rank pane shows them at a natural divot/knee, the
-    # operating point is identifiable without oracle knowledge of the data's L0.
-    starred = []
-    for lam in sorted({r["lam"] for r in rows if r["group"] in ("grid", "baseline")}):
-        seq = [r for r in rows if r["group"] in ("grid", "baseline") and r["lam"] == lam
-               and r["atoms"] is not None]
-        if seq:
-            starred.append(min(seq, key=lambda r: abs(r["atoms"] - 4.0)))
     fig, axes = plt.subplots(1, 2, figsize=(14.5, 6), sharey=True)
     for ax, (key, xlabel, mark_l0) in zip(axes, panes):
         rs = [r for r in rows if r[key] is not None]
@@ -183,11 +174,6 @@ def paretos(rows):
                                 xytext=(3, -6), textcoords="offset points")
         if mark_l0:
             ax.axvline(4.0, color="0.7", ls="--", lw=1, label="data L0 = 4 (dedicated code)")
-        stars = [r for r in starred if r[key] is not None]
-        if stars:
-            ax.scatter([r[key] for r in stars], [r["fvu"] for r in stars], marker="*", s=300,
-                       facecolor="gold", edgecolor="k", linewidths=0.8, zorder=5,
-                       label="closest to atoms/sample = 4")
         ax.set_xlabel(xlabel); ax.set_yscale("log"); ax.grid(alpha=0.25)
     axes[0].set_ylabel("mixture FVU (log)")
     axes[0].legend(fontsize=8)
